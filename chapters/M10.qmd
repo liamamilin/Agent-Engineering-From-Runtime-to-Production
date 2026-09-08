@@ -1,0 +1,706 @@
+# M10 — Safety, Reliability & Resource Control
+
+## Learning Objectives
+
+By the end of this module, the learner can:
+
+- 实现权限系统，控制 agent 对资源的操作
+- 实现 guardrails，验证和过滤输入输出
+- 实现预算管理，控制资源消耗
+- 实现可靠性机制，包括重试、超时和断路器
+- 理解安全、可靠性和资源控制的重要性
+
+## 1. Engineering Problem
+
+Agent 系统在生产环境中面临以下挑战：
+
+1. **权限控制**：Agent 可能访问敏感资源或执行危险操作
+2. **输入输出安全**：Agent 可能接收恶意输入或产生有害输出
+3. **资源消耗**：Agent 可能消耗过多 token、时间或成本
+4. **故障处理**：Agent 可能遇到网络错误、超时或其他故障
+
+我们需要一个完整的安全和可靠性框架来保护系统。
+
+## 2. Mental Model
+
+### 2.1 Permission System
+
+权限系统控制 Agent 对资源的访问：
+
+```text
+Permission Levels:
+- NONE: 无权限
+- READ: 只读访问
+- WRITE: 写入访问（包括读取）
+- EXECUTE: 执行访问（包括读取和写入）
+- ADMIN: 完全访问
+
+Permission = (resource, level, conditions)
+```
+
+### 2.2 Guardrails
+
+Guardrails 验证和过滤输入输出：
+
+```text
+Input Guardrails:
+- 长度限制
+- 模式匹配
+- 敏感词过滤
+- 格式验证
+
+Output Guardrails:
+- 内容安全
+- 格式验证
+- 敏感信息过滤
+```
+
+### 2.3 Budget Management
+
+预算管理控制资源消耗：
+
+```text
+Budget Types:
+- TOKENS: Token 消耗
+- STEPS: 执行步数
+- TIME: 执行时间
+- COST: 成本（USD）
+- API_CALLS: API 调用次数
+
+Budget = (type, limit, used)
+```
+
+### 2.4 Reliability Mechanisms
+
+可靠性机制处理故障：
+
+```text
+Retry Policy:
+- 最大重试次数
+- 退避策略（指数退避）
+- 可重试异常
+
+Timeout Policy:
+- 超时时间
+- 超时处理
+
+Circuit Breaker:
+- 失败阈值
+- 恢复超时
+- 状态机（CLOSED -> OPEN -> HALF_OPEN）
+```
+
+## 3. Runtime Walkthrough
+
+### 3.1 Permission Check
+
+```python
+# 1. 创建权限管理器
+perm_manager = PermissionManager()
+
+# 2. 授予权限
+perm = Permission(
+    resource="file:/tmp",
+    level=PermissionLevel.WRITE,
+)
+perm_manager.grant("agent_1", perm)
+
+# 3. 检查权限
+if perm_manager.check("agent_1", "file:/tmp", "write"):
+    # 执行操作
+    pass
+else:
+    # 拒绝操作
+    pass
+```
+
+### 3.2 Guardrail Check
+
+```python
+# 1. 创建 guardrail 管理器
+guardrail_manager = GuardrailManager()
+
+# 2. 添加 guardrails
+length_guardrail = guardrail_manager.create_length_guardrail(
+    "max_length", 1000, is_input=True
+)
+guardrail_manager.add_input_guardrail(length_guardrail)
+
+blocked_guardrail = guardrail_manager.create_blocked_words_guardrail(
+    "no_bad_words", ["evil", "hack"], is_input=True
+)
+guardrail_manager.add_input_guardrail(blocked_guardrail)
+
+# 3. 检查输入
+is_valid, errors = guardrail_manager.check_input(user_input)
+if not is_valid:
+    # 拒绝输入
+    pass
+```
+
+### 3.3 Budget Check
+
+```python
+# 1. 创建预算管理器
+budget_manager = BudgetManager()
+
+# 2. 创建预算
+budget_manager.create_token_budget("agent_1", limit=10000)
+budget_manager.create_step_budget("agent_1", limit=50)
+
+# 3. 消耗预算
+try:
+    budget_manager.consume("agent_1", BudgetType.TOKENS, 100)
+except BudgetExceededError:
+    # 预算超限
+    pass
+
+# 4. 检查预算
+if budget_manager.check_budget("agent_1", BudgetType.TOKENS):
+    # 预算充足
+    pass
+```
+
+### 3.4 Reliability Execution
+
+```python
+# 1. 创建可靠性管理器
+reliability_manager = ReliabilityManager()
+
+# 2. 设置重试策略
+retry_policy = RetryPolicy(
+    max_retries=3,
+    base_delay=1.0,
+    max_delay=60.0,
+)
+reliability_manager.set_retry_policy("agent_1", retry_policy)
+
+# 3. 设置超时策略
+timeout_policy = TimeoutPolicy(timeout_seconds=30.0)
+reliability_manager.set_timeout_policy("agent_1", timeout_policy)
+
+# 4. 设置断路器
+circuit_breaker = CircuitBreaker(
+    failure_threshold=5,
+    recovery_timeout=60.0,
+)
+reliability_manager.set_circuit_breaker("agent_1", circuit_breaker)
+
+# 5. 执行操作
+result = reliability_manager.execute_with_all("agent_1", risky_operation)
+```
+
+## 4. Minimal Implementation
+
+### 4.1 Permission
+
+```python
+@dataclass
+class Permission:
+    resource: str
+    level: PermissionLevel
+    conditions: dict[str, Any] = field(default_factory=dict)
+    
+    def allows(self, action: str, context: dict[str, Any] | None = None) -> bool:
+        """Check if permission allows action."""
+        action_levels = {
+            "read": PermissionLevel.READ,
+            "write": PermissionLevel.WRITE,
+            "execute": PermissionLevel.EXECUTE,
+        }
+        required_level = action_levels.get(action, PermissionLevel.NONE)
+        
+        if not self.level.includes(required_level):
+            return False
+        
+        if self.conditions:
+            context = context or {}
+            for key, value in self.conditions.items():
+                if key not in context or context[key] != value:
+                    return False
+        
+        return True
+
+class PermissionManager:
+    def __init__(self):
+        self._permissions: dict[str, list[Permission]] = {}
+    
+    def grant(self, agent_id: str, permission: Permission) -> None:
+        if agent_id not in self._permissions:
+            self._permissions[agent_id] = []
+        self._permissions[agent_id].append(permission)
+    
+    def check(self, agent_id: str, resource: str, action: str, 
+              context: dict[str, Any] | None = None) -> bool:
+        if agent_id not in self._permissions:
+            return False
+        
+        for permission in self._permissions[agent_id]:
+            if permission.resource == resource or permission.resource == "*":
+                if permission.allows(action, context):
+                    return True
+        
+        return False
+```
+
+### 4.2 Guardrail
+
+```python
+@dataclass
+class Guardrail:
+    name: str
+    description: str
+    check_fn: Callable[[Any], tuple[bool, str]]
+    
+    def check(self, value: Any) -> tuple[bool, str]:
+        return self.check_fn(value)
+
+class GuardrailManager:
+    def __init__(self):
+        self._input_guardrails: list[Guardrail] = []
+        self._output_guardrails: list[Guardrail] = []
+    
+    def add_input_guardrail(self, guardrail: Guardrail) -> None:
+        self._input_guardrails.append(guardrail)
+    
+    def check_input(self, value: Any) -> tuple[bool, list[str]]:
+        errors = []
+        for guardrail in self._input_guardrails:
+            is_valid, error_msg = guardrail.check(value)
+            if not is_valid:
+                errors.append(f"{guardrail.name}: {error_msg}")
+        return len(errors) == 0, errors
+    
+    def create_length_guardrail(self, name: str, max_length: int, 
+                                is_input: bool = True) -> Guardrail:
+        def check_length(value: Any) -> tuple[bool, str]:
+            if isinstance(value, str) and len(value) > max_length:
+                return False, f"Length {len(value)} exceeds maximum {max_length}"
+            return True, ""
+        
+        return Guardrail(
+            name=name,
+            description=f"Maximum length: {max_length}",
+            check_fn=check_length,
+        )
+```
+
+### 4.3 Budget
+
+```python
+@dataclass
+class Budget:
+    budget_type: BudgetType
+    limit: float
+    used: float = 0.0
+    
+    @property
+    def is_exceeded(self) -> bool:
+        return self.used > self.limit
+    
+    def consume(self, amount: float) -> None:
+        if self.used + amount > self.limit:
+            raise BudgetExceededError(
+                f"Budget exceeded: {self.budget_type.value} "
+                f"(used={self.used}, limit={self.limit}, requested={amount})"
+            )
+        self.used += amount
+    
+    def try_consume(self, amount: float) -> bool:
+        if self.used + amount > self.limit:
+            return False
+        self.used += amount
+        return True
+
+class BudgetManager:
+    def __init__(self):
+        self._budgets: dict[str, dict[BudgetType, Budget]] = {}
+    
+    def create_budget(self, agent_id: str, budget_type: BudgetType, 
+                      limit: float) -> Budget:
+        if agent_id not in self._budgets:
+            self._budgets[agent_id] = {}
+        budget = Budget(budget_type=budget_type, limit=limit)
+        self._budgets[agent_id][budget_type] = budget
+        return budget
+    
+    def consume(self, agent_id: str, budget_type: BudgetType, 
+                amount: float) -> None:
+        budget = self.get_budget(agent_id, budget_type)
+        if budget:
+            budget.consume(amount)
+    
+    def check_budget(self, agent_id: str, budget_type: BudgetType) -> bool:
+        budget = self.get_budget(agent_id, budget_type)
+        if budget is None:
+            return True
+        return not budget.is_exceeded
+```
+
+### 4.4 Reliability
+
+```python
+@dataclass
+class RetryPolicy:
+    max_retries: int = 3
+    base_delay: float = 1.0
+    max_delay: float = 60.0
+    exponential_base: float = 2.0
+    
+    def execute(self, fn: Callable[[], Any]) -> Any:
+        last_exception = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                return fn()
+            except Exception as e:
+                last_exception = e
+                if attempt < self.max_retries:
+                    delay = min(
+                        self.base_delay * (self.exponential_base ** attempt),
+                        self.max_delay,
+                    )
+                    time.sleep(delay)
+        raise last_exception
+
+@dataclass
+class CircuitBreaker:
+    failure_threshold: int = 5
+    recovery_timeout: float = 60.0
+    state: CircuitState = CircuitState.CLOSED
+    failure_count: int = 0
+    last_failure_time: float = 0.0
+    
+    def call(self, fn: Callable[[], Any]) -> Any:
+        if self.state == CircuitState.OPEN:
+            if time.time() - self.last_failure_time >= self.recovery_timeout:
+                self.state = CircuitState.HALF_OPEN
+            else:
+                raise Exception("Circuit breaker is open")
+        
+        try:
+            result = fn()
+            self.on_success()
+            return result
+        except Exception as e:
+            self.on_failure()
+            raise
+    
+    def on_success(self) -> None:
+        self.failure_count = 0
+        self.state = CircuitState.CLOSED
+    
+    def on_failure(self) -> None:
+        self.failure_count += 1
+        self.last_failure_time = time.time()
+        if self.failure_count >= self.failure_threshold:
+            self.state = CircuitState.OPEN
+```
+
+## 5. Failure Modes
+
+| 层级 | 故障 | 示例 |
+|------|------|------|
+| Safety | 权限不足 | Agent 尝试访问未授权资源 |
+| Safety | 权限过宽 | Agent 拥有过多权限，造成安全风险 |
+| Safety | 绕过检查 | 恶意输入绕过 guardrail 检查 |
+| Safety | 误报 | 正常输入被 guardrail 拒绝 |
+| Resource | 预算超限 | Agent 消耗超过预算限制 |
+| Resource | 预算不足 | 预算设置过低，Agent 无法完成任务 |
+| Reliability | 重试风暴 | 大量重试导致系统过载 |
+| Reliability | 断路器误触发 | 断路器在正常故障时打开 |
+| Reliability | 超时设置不当 | 超时时间过短或过长 |
+
+**调试规则**：在提出修复方案之前，先将观察到的故障映射到规范分类法的层级（Task, Observation, Context, Policy, Action, Transition, Control, Knowledge, Memory, Composition, Safety, Reliability, Resource, Evaluation）。
+
+**工程规则**：
+1. 最小权限原则：只授予必要的权限
+2. 深度防御：多层 guardrails 保护
+3. 预算优先：在任务开始前检查预算
+4. 优雅降级：故障时优雅处理，不崩溃
+5. 监控和告警：实时监控安全和可靠性指标
+
+## 6. Engineering Upgrade
+
+从最小实现到生产级：
+
+1. **添加权限审计**：记录所有权限检查
+2. **添加动态 guardrails**：根据上下文动态调整
+3. **添加预算预测**：预测任务所需预算
+4. **添加智能重试**：根据错误类型选择重试策略
+5. **添加分布式断路器**：跨服务共享断路器状态
+
+## 7. Lab
+
+构建一个安全和可靠性框架，演示：
+- 权限检查和授权
+- Guardrail 验证和过滤
+- 预算管理和控制
+- 重试、超时和断路器
+
+可直接运行的完整案例见本章末尾“完整案例”一节，脚本位于 `code/` 目录。
+
+## 8. Evaluation
+
+- Unsafe side effect is blocked in test
+- Budget exhaustion terminates cleanly
+- Retryable vs non-retryable errors are distinguished
+- Guardrail decisions appear in traces
+
+## 9. What Changed in Our Agent?
+
+本模块添加了 `safety/` 子包：
+
+- `permissions.py`: Permission, PermissionLevel, PermissionManager
+- `guardrails.py`: Guardrail, InputGuardrail, OutputGuardrail, GuardrailManager
+- `budgets.py`: Budget, BudgetManager, BudgetExceededError
+- `reliability.py`: RetryPolicy, TimeoutPolicy, CircuitBreaker, ReliabilityManager
+
+这些组件让 Agent 可以安全、可靠地运行，并控制资源消耗。
+
+## 10. 完整案例：防护栏（预算/敏感词/超时） {#sec-m10-case}
+
+完整脚本位于 `code/M10_guardrails.py`。
+```text
+LLM_BASE_URL  = "http://localhost:11434/v1"   # 你的 API 地址（OpenAI 兼容）
+LLM_API_KEY   = "ollama"                      # 你的 API Key
+LLM_MODEL_ID  = "qwen3.8:27b-mlx"             # 你的模型名
+```
+
+所有案例脚本**零第三方依赖**（纯 Python 标准库），任何 OpenAI 兼容 API（Ollama、DeepSeek、OpenAI 等）都可以使用。
+
+### 运行方式
+
+```bash
+python code/M10_guardrails.py
+```
+
+### 完整代码
+
+::: {.callout-note collapse="true"}
+## 点击展开完整代码
+
+````python
+# -*- coding: utf-8 -*-
+"""
+M10 完整案例 — Guardrails：预算、敏感词与超时的防护层
+======================================================
+
+运行前只需修改下面 3 行配置（任何 OpenAI 兼容 API 都可以）：
+
+    LLM_BASE_URL   例如 http://localhost:11434/v1（Ollama）
+                     或 https://api.deepseek.com/v1
+    LLM_API_KEY    本地 Ollama 随便填，云端填你的 key
+    LLM_MODEL_ID   例如 qwen3.8:27b-mlx
+
+运行：  python M10_guardrails.py
+
+本案例演示本章核心概念：
+  1. 防护栏在业务逻辑之外：输入过滤 -> 预算检查 -> 调用 -> 输出过滤
+  2. token 预算是累计的：不限制就等于无限烧钱，超限必须优雅停止
+  3. 敏感词拦截发生在"模型看到之前"和"用户看到之前"两个位置
+  4. 超时是资源保护：宁可快速失败，不可无限等待
+
+如何阅读本文件（写给零基础读者）：
+  - 全文按 1~5 分区从上往下读：配置 -> 迷你客户端 -> 防护栏类 -> 带护栏的 Agent -> 主流程。
+  - "护栏"（Guardrails）是包在 Agent 外面的一层安全检查，和业务逻辑（回答问题）
+    完全分开：输入先过滤、预算先检查、再调用模型、最后输出再过滤。
+  - token 预算是累计的：每次调用的 token 用量都要累加记账，累计超限就拒绝服务。
+    为什么？因为按 token 计费，不限预算 = 不设上限的花钱。
+  - 所有拦截和异常都记录进 events 日志：出了问题不能只"悄悄拦下"，
+    要留下证据可查（可观察性），上线后排查故障全靠它。
+"""
+
+import json
+import time
+import urllib.error
+import urllib.request
+
+# ========================= 1. 配置区：只改这里 =========================
+LLM_BASE_URL = "http://localhost:11434/v1"   # 你的 API 地址（OpenAI 兼容）
+LLM_API_KEY = "ollama"                       # 你的 API Key
+LLM_MODEL_ID = "qwen3.8:27b-mlx"             # 你的模型名
+# =======================================================================
+
+
+# ========================= 2. Mini 客户端（带超时与用量返回） =========================
+def chat(messages, temperature=0.0, timeout=60, max_tokens=1500):
+    """调用大模型的最小客户端。与 M7 的区别：返回值多带一份 token 用量，
+    供护栏记账用；timeout 传给 urlopen，超时直接抛 TimeoutError 快速失败。"""
+    # OpenAI 兼容接口的固定路径：基础地址 + /chat/completions
+    url = LLM_BASE_URL.rstrip("/") + "/chat/completions"
+    # 请求体：模型名 + 对话历史 + 生成参数，打包成 JSON 字节串
+    payload = json.dumps({"model": LLM_MODEL_ID, "messages": messages,
+                          "temperature": temperature,
+                          "max_tokens": max_tokens}).encode("utf-8")
+    headers = {"Content-Type": "application/json",
+               "Authorization": f"Bearer {LLM_API_KEY}"}
+    # timeout 参数是本案例的重点之一：一旦服务端 60 秒没响应就放弃，
+    # 而不是让用户一直干等——这就是"资源保护"
+    request = urllib.request.Request(url, data=payload, headers=headers)
+    with urllib.request.urlopen(request, timeout=timeout) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    # 返回 (回复文本, 总 token 数) 二元组：total_tokens 是护栏记账的依据
+    return (data["choices"][0]["message"]["content"],
+            data.get("usage", {}).get("total_tokens", 0))
+
+
+# ========================= 3. 防护栏实现 =========================
+class Guardrails:
+    """护栏：一个持有预算、敏感词表和事件日志的对象。
+    三道闸门：输入过滤 -> 预算检查 -> 输出过滤，外加调用超时保护。"""
+
+    def __init__(self, total_budget_tokens=2000):
+        # 总预算：本进程累计最多消耗这么多 token（生产中按天/按用户计）
+        self.budget = total_budget_tokens
+        # 已用量：每调用一次模型就累加，是"记账本"
+        self.used = 0
+        # 敏感词表：命中任何一个词都拦截。真实系统会用更完善的规则/分类器
+        self.denylist = ["密码", "身份证号", "转账", "验证码"]
+        # 防护栏事件日志：每一次拦截/异常/用量都记一笔。
+        # 为什么记日志？因为拦截动作必须可追溯——上线后出了投诉或事故，
+        # 要能回答"它当时为什么拒了/放行了哪条输入"，光拦不记等于黑箱
+        self.events = []  # 防护栏事件日志：可观察性
+
+    def log(self, event):
+        """写一笔事件：既存进内存列表（最后统一打印），也立即打上控制台。"""
+        self.events.append(event)
+        print(f"[guardrail] {event}")
+
+    def check_input(self, text):
+        """输入过滤：在模型看到之前拦截。
+        用户想问密码/验证码这类敏感内容时，请求根本不会发给模型，
+        既不泄露也不花冤枉钱。"""
+        for word in self.denylist:
+            if word in text:
+                self.log(f"输入拦截：命中敏感词 {word!r}")
+                return False
+        return True
+
+    def check_budget(self):
+        """预算检查：调用前确认还有余量。
+        注意是"调用前"检查——一旦超限，后续所有请求都被拒绝，优雅停止。"""
+        if self.used >= self.budget:
+            self.log(f"预算耗尽（已用 {self.used}/{self.budget} tokens），停止服务")
+            return False
+        return True
+
+    def record_usage(self, tokens):
+        """记账：把本次调用的 token 用量累加进已用总额，并写日志。"""
+        self.used += tokens
+        self.log(f"用量 {tokens} tokens（累计 {self.used}/{self.budget}）")
+
+    def check_output(self, text):
+        """输出过滤：在用户看到之前拦截（防止模型自己说出敏感内容）。
+        即使输入是干净的，模型也可能跑题说出不该说的话，所以要双向把关。"""
+        for word in self.denylist:
+            if word in text:
+                self.log(f"输出拦截：回复包含敏感词 {word!r}")
+                # 用一句固定提示替代原回复，而不是把敏感回复交给用户
+                return "（回复被安全过滤，请换个问法）"
+        return text
+
+
+# ========================= 4. 带防护栏的 Agent =========================
+def guarded_agent(guard, question):
+    print(f"\n>>> 问题：{question}")
+
+    # 闸门 1：输入过滤
+    if not guard.check_input(question):
+        return "（输入被安全策略拒绝）"
+    # 闸门 2：预算检查
+    if not guard.check_budget():
+        return "（预算耗尽，本轮服务已停止）"
+
+    # 调用模型（带超时保护）
+    try:
+        answer, tokens = chat([
+            {"role": "system", "content": "你是校园助理，回答不超过 80 字。"},
+            {"role": "user", "content": question},
+        ], timeout=45)
+    except TimeoutError:
+        # 超时 = 服务端 45 秒都没响应。快速失败并记录，比让用户无限等好
+        guard.log("调用超时（45s），快速失败")
+        return "（服务超时，请稍后重试）"
+    except Exception as e:
+        # 其他异常（断网、接口变更等）也兜住：不能让程序直接崩溃在用户面前
+        guard.log(f"调用异常：{e}")
+        return "（服务暂时不可用）"
+
+    # 调用成功，把这次消耗的 token 记账（影响后续预算检查）
+    guard.record_usage(tokens)
+    # 闸门 3：输出过滤
+    return guard.check_output(answer.strip())
+
+
+# ========================= 5. 演示主流程：三个场景 =========================
+SCENARIOS = [
+    ("敏感词拦截", "帮我看看怎么查自己的登录密码？", None),
+    ("正常服务", "图书馆周末几点开门？", None),
+    ("预算耗尽", "再帮我总结一下这学期的选课建议。", 0),  # 0=调用前预算已耗尽
+]
+
+
+def main():
+    print("=" * 60)
+    print("M10 案例：防护栏（预算/敏感词/超时）")
+    print("=" * 60)
+    print(f"模型: {LLM_MODEL_ID} @ {LLM_BASE_URL}\n")
+
+    guard = Guardrails(total_budget_tokens=2000)
+    # 场景 1：敏感词 -> 应被输入闸门拦截，不消耗预算
+    #（拦截发生在调用模型之前，所以这次是 0 成本的）
+    answer = guarded_agent(guard, SCENARIOS[0][1])
+    print(f"<<< 答案：{answer}")
+    # 场景 2：正常请求 -> 通过三道闸门
+    answer = guarded_agent(guard, SCENARIOS[1][1])
+    print(f"<<< 答案：{answer}")
+    # 场景 3：把预算压到已用值，演示优雅停止
+    # guard.budget = guard.used 相当于把额度烧光，下一个请求应被预算闸门拦下
+    guard.budget = guard.used
+    answer = guarded_agent(guard, SCENARIOS[2][1])
+    print(f"<<< 答案：{answer}")
+
+    # 最后统一回放整个事件日志：这三轮里每一次拦截/记账都有据可查
+    print("\n防护栏事件日志：")
+    for e in guard.events:
+        print(f"  - {e}")
+
+
+if __name__ == "__main__":
+    main()
+````
+:::
+
+### 运行结果（真实输出节选）
+
+```text
+>>> 问题：帮我看看怎么查自己的登录密码？
+[guardrail] 输入拦截：命中敏感词 '密码'
+<<< 答案：（输入被安全策略拒绝）
+
+>>> 问题：图书馆周末几点开门？
+[guardrail] 用量 113 tokens（累计 113/2000）
+<<< 答案：一般高校图书馆周末开放时间为 8:00–22:00，但各校不同……
+
+>>> 问题：再帮我总结一下这学期的选课建议。
+[guardrail] 预算耗尽（已用 113/113 tokens），停止服务
+<<< 答案：（预算耗尽，本轮服务已停止）
+```
+
+### 案例要点
+
+- 三道闸门顺序执行：输入过滤 -> 预算检查 -> 调用（带超时）-> 输出过滤
+- token 预算是累计的：`record_usage()` 后超限即优雅停止，不抛异常
+- 敏感词在'模型看到前'和'用户看到前'两个位置各拦一次
+- `events` 日志记录所有防护动作——防护栏本身必须可观察
+
+## 10. Summary
+
+- 权限系统控制 Agent 对资源的访问
+- Guardrails 验证和过滤输入输出
+- 预算管理控制资源消耗
+- 可靠性机制处理故障
+- 最小权限原则：只授予必要的权限
+- 深度防御：多层保护
+- 优雅降级：故障时优雅处理
+- 监控和告警：实时监控指标

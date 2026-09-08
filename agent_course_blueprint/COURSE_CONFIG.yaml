@@ -1,0 +1,25 @@
+course:
+  title: "Agent Engineering: From Runtime to Production"
+  primary_language: "zh-CN"
+  terminology_policy: "Use Chinese explanations; introduce the canonical English technical term on first use."
+  code_language: "Python"
+  python_version: ">=3.11"
+  framework_policy: "framework-independent core; framework adapters only after mechanism is understood"
+
+content:
+  chapter_target_words_zh: "2500-4500"
+  require_runtime_walkthrough: true
+  require_failure_modes: true
+  require_engineering_rules: true
+  require_trace_example: true
+  require_tests_for_labs: true
+
+reference_implementation:
+  package_name: "agent_course"
+  offline_test_mode: true
+  network_calls_mockable: true
+  preferred_dependencies:
+    - pydantic
+    - pytest
+    - httpx
+    - fastapi

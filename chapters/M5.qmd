@@ -1,0 +1,498 @@
+# M5 — Context Engineering & Working State
+
+## Learning Objectives
+
+By the end of this module, the learner can:
+
+- 理解 Context 是为每次模型调用构建的选择性视图
+- 区分 instructions、task、state、observation、memory、retrieved data、tool descriptions
+- 实现 budget-aware 的上下文构建
+- 使用优先级策略选择上下文项
+- 实现压缩（compaction）策略
+- 理解 prompt injection 边界
+
+## 1. Engineering Problem
+
+模型的上下文窗口是有限的。随着对话变长，我们面临：
+
+1. **Token 限制**：无法放入所有信息
+2. **信息过载**：太多信息降低模型性能
+3. **成本问题**：更多 token = 更高成本
+4. **安全风险**：不可信内容可能注入指令
+
+我们需要一个智能的上下文构建系统，在有限预算内选择最有价值的信息。
+
+## 2. Mental Model
+
+### 2.1 Context as Per-Call View
+
+Context 不是 State 的同义词。Context 是为每次模型调用**构建的视图**：
+
+```text
+State (all information)
+    |
+    v
++------------------+
+| Context Builder  |  <-- 选择、排序、压缩
++------------------+
+    |
+    v
+Context (selected view for this call)
+    |
+    v
+Model
+```
+
+### 2.2 Context Sources
+
+Context 可以来自多个来源：
+
+| 来源 | 优先级 | 示例 |
+|------|--------|------|
+| Instructions | CRITICAL | System prompt |
+| Task | CRITICAL | Goal, success criteria |
+| Current Observation | HIGH | Latest user input |
+| Recent Tool Results | MEDIUM | Last 5 tool outputs |
+| Tool Descriptions | LOW | Available tools |
+| Memory | MEDIUM | Retrieved facts |
+| Retrieved Data | MEDIUM | Search results |
+
+### 2.3 Budget Allocation
+
+Token 预算需要分配：
+
+```text
+Total Budget: 4000 tokens
+├── System Prompt: 200 (CRITICAL)
+├── Task: 100 (CRITICAL)
+├── Current Observation: 200 (HIGH)
+├── Recent Tool Results: 1000 (MEDIUM)
+├── Tool Descriptions: 500 (LOW)
+└── Available for Memory/Retrieval: 2000
+```
+
+### 2.4 Selection Strategies
+
+| 策略 | 特征 | 适用场景 |
+|------|------|----------|
+| Priority | 按优先级选择 | 通用场景 |
+| Recency | 选择最近的 | 对话场景 |
+| Relevance | 按相关性选择 | 需要检索时 |
+
+### 2.5 Compaction Strategies
+
+当上下文太长时：
+
+1. **Truncation**：截断长内容
+2. **Summarization**：总结旧内容
+3. **Sliding Window**：保留最近 N 项
+
+## 3. Runtime Walkthrough
+
+```python
+# 1. 创建 budget-aware context builder
+builder = BudgetContextBuilder(
+    system_prompt="You are helpful",
+    max_tokens=4000,
+    selector=PrioritySelector(),
+    compactor=TruncationCompactor(),
+)
+
+# 2. 构建上下文
+messages = builder.build(task, state, observation, tools)
+
+# 3. 检查选择日志
+for entry in builder.selection_log:
+    print(f"{entry['source']}: selected={entry['selected']}")
+
+# 4. 检查 budget 使用
+print(f"Budget utilization: {builder.budget.utilization:.1%}")
+```
+
+## 4. Minimal Implementation
+
+### 4.1 TokenBudget
+
+```python
+class TokenBudget:
+    def __init__(self, max_tokens: int):
+        self.max_tokens = max_tokens
+        self.used_tokens = 0
+
+    def allocate(self, tokens: int):
+        if tokens > self.available:
+            raise BudgetExceededError()
+        self.used_tokens += tokens
+
+    @property
+    def available(self) -> int:
+        return self.max_tokens - self.used_tokens
+```
+
+### 4.2 ContextItem
+
+```python
+class ContextItem:
+    content: str
+    priority: ContextPriority
+    source: str
+    token_count: int
+```
+
+### 4.3 PrioritySelector
+
+```python
+class PrioritySelector:
+    def select(self, items, budget_tokens):
+        sorted_items = sorted(items, key=lambda x: x.priority)
+        selected = []
+        total = 0
+        for item in sorted_items:
+            if total + item.token_count <= budget_tokens:
+                selected.append(item)
+                total += item.token_count
+        return selected
+```
+
+### 4.4 BudgetContextBuilder
+
+```python
+class BudgetContextBuilder:
+    def build(self, task, state, observation, tools):
+        items = self._collect_items(task, state, observation, tools)
+        items = self._compactor.compact(items)
+        selected = self._selector.select(items, self._budget.max_tokens)
+        return self._build_messages(selected)
+```
+
+## 5. Failure Modes
+
+| 层级 | 故障 | 示例 |
+|------|------|------|
+| Context | 预算溢出 | 上下文超过模型限制 |
+| Context | 关键信息丢失 | 重要工具结果被丢弃 |
+| Context | Prompt injection | 不可信内容包含指令 |
+| Context | 信息过载 | 太多信息降低性能 |
+
+**调试规则**：在提出修复方案之前，先将观察到的故障映射到规范分类法的层级（Task, Observation, Context, Policy, Action, Transition, Control, Knowledge, Memory, Composition, Safety, Reliability, Resource, Evaluation）。
+
+**工程规则**：
+1. 总是设置 token 预算
+2. CRITICAL 项必须包含
+3. 记录选择日志以便调试
+4. 分离可信和不可信内容
+
+## 6. Engineering Upgrade
+
+从最小实现到生产级：
+
+1. **添加 embedding-based 选择**：使用语义相似度
+2. **添加动态预算**：根据任务调整
+3. **添加 context cache**：缓存常用上下文
+4. **添加 injection 检测**：过滤恶意内容
+5. **添加 cost tracking**：跟踪每次调用的成本
+
+## 7. Lab
+
+构建一个 budget-aware context builder，支持：
+- 优先级选择
+- 压缩策略
+- 选择日志
+- Budget 跟踪
+
+可直接运行的完整案例见本章末尾“完整案例”一节，脚本位于 `code/` 目录。
+
+## 8. Evaluation
+
+- 上下文选择在离线测试模式下是确定性的
+- Budget 溢出行为被测试
+- 选择/丢弃的项可追踪
+- 恶意检索文本与可信指令分离
+
+## 9. What Changed in Our Agent?
+
+本模块添加了 `context/` 子包：
+
+- `budget.py`: TokenBudget
+- `selection.py`: ContextItem, ContextPriority, SelectionPolicy
+- `compaction.py`: Compactor, TruncationCompactor, SummaryCompactor
+- `builder.py`: BudgetContextBuilder
+
+这些组件让 Agent 可以智能地管理上下文。
+
+## 10. 完整案例：token 预算与历史压缩 {#sec-m5-case}
+
+完整脚本位于 `code/M5_context_budget.py`。
+```text
+LLM_BASE_URL  = "http://localhost:11434/v1"   # 你的 API 地址（OpenAI 兼容）
+LLM_API_KEY   = "ollama"                      # 你的 API Key
+LLM_MODEL_ID  = "qwen3.8:27b-mlx"             # 你的模型名
+```
+
+所有案例脚本**零第三方依赖**（纯 Python 标准库），任何 OpenAI 兼容 API（Ollama、DeepSeek、OpenAI 等）都可以使用。
+
+### 运行方式
+
+```bash
+python code/M5_context_budget.py
+```
+
+### 完整代码
+
+::: {.callout-note collapse="true"}
+## 点击展开完整代码
+
+````python
+# -*- coding: utf-8 -*-
+"""
+M5 完整案例 — Context Engineering：token 预算与历史压缩
+========================================================
+
+运行前只需修改下面 3 行配置（任何 OpenAI 兼容 API 都可以）：
+
+    LLM_BASE_URL   例如 http://localhost:11434/v1（Ollama）
+                     或 https://api.deepseek.com/v1
+    LLM_API_KEY    本地 Ollama 随便填，云端填你的 key
+    LLM_MODEL_ID   例如 qwen3.5:9b-mlx / deepseek-chat
+
+运行：  python M5_context_budget.py
+
+本案例演示本章核心概念：
+  1. 上下文是有限资源：超出预算必须裁剪，而不是无限堆消息
+  2. 裁剪策略 = "旧历史压缩成摘要 + 保留最近若干轮原文"
+  3. 裁剪后信息有损，所以系统提示里要带上"既往事实摘要"
+  4. 每一轮都打印当前上下文规模，让预算可见
+
+如何阅读本文件：
+  核心只看两个东西：(1) estimate_tokens —— 怎么估算一段文字占多少
+  token；(2) BudgetChatAgent —— 超预算时怎么把旧历史压缩成摘要。
+  其余的 chat 函数和 CONVERSATION 对话脚本只是支撑代码。
+  建议边跑边看输出里 [budget] / [context] 开头的日志，
+  能直观看到上下文是怎么被"裁"下来的。
+"""
+
+import json
+import time
+import urllib.error
+import urllib.request
+
+# ========================= 1. 配置区：只改这里 =========================
+LLM_BASE_URL = "http://localhost:11434/v1"   # 你的 API 地址（OpenAI 兼容）
+LLM_API_KEY = "ollama"                       # 你的 API Key
+LLM_MODEL_ID = "qwen3.8:27b-mlx"              # 你的模型名
+# =======================================================================
+
+
+# ========================= 2. Mini 客户端 =========================
+# 和 M4 一样的极简 HTTP 客户端，不装任何第三方库。
+# 区别是这里每次调用都会打印 token 用量，方便观察上下文消耗。
+def chat(messages, temperature=0.0, max_retries=3, timeout=180, max_tokens=1500):
+    """调用 OpenAI 兼容接口，返回回答文本。带指数退避重试。"""
+    url = LLM_BASE_URL.rstrip("/") + "/chat/completions"
+    payload = json.dumps({"model": LLM_MODEL_ID, "messages": messages,
+                          "temperature": temperature,
+                          "max_tokens": max_tokens}).encode("utf-8")
+    headers = {"Content-Type": "application/json",
+               "Authorization": f"Bearer {LLM_API_KEY}"}
+    last_error = None
+    for attempt in range(max_retries + 1):
+        try:
+            request = urllib.request.Request(url, data=payload, headers=headers)
+            with urllib.request.urlopen(request, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            # usage 由服务端返回精确的 token 计数（prompt=输入 / completion=输出）
+            usage = data.get("usage", {})
+            print(f"[model] tokens: prompt={usage.get('prompt_tokens', '?')} "
+                  f"completion={usage.get('completion_tokens', '?')}")
+            return data["choices"][0]["message"]["content"]
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as e:
+            last_error = e
+            if attempt < max_retries:
+                # 间隔 1s、2s、4s 递增，给服务端恢复时间
+                time.sleep(2 ** attempt)
+    raise RuntimeError(f"模型调用失败（已重试 {max_retries} 次）：{last_error}")
+
+
+# ========================= 3. 预算估算器 =========================
+# token 是大模型处理文本的最小单位：模型读的不是"字"，而是 token。
+# 一个汉字通常是 1 个左右 token，一个英文单词常被拆成 1~2 个 token。
+# 上下文窗口（模型一次能"看到"的全部内容）按 token 计数，
+# 计费也按 token 计数，所以它是必须精打细算的资源。
+def estimate_tokens(text):
+    """粗略估算：中文约 1 字 ≈ 1 token，英文约 4 字符 ≈ 1 token。
+    精确计费用 API 返回的 usage；这里用于发送前的预算判断。
+    （发送前你还拿不到服务端的精确计数，只能自己估。）"""
+    # 统计中文字符个数：Unicode 范围 \u4e00-\u9fff 就是常用汉字区
+    cjk = sum(1 for ch in text if "\u4e00" <= ch <= "\u9fff")
+    # 剩下的非中文字符（字母/数字/标点）按 4 个字符折 1 token 粗算
+    other = len(text) - cjk
+    return cjk + other // 4
+
+
+# ========================= 4. 带预算的对话 Agent =========================
+class BudgetChatAgent:
+    """超过 token 预算时，把旧历史压缩成摘要，只保留最近 turns_keep 轮。
+
+    为什么旧历史被压缩成摘要、再注入 system 消息后，旧事实还能被召回？
+    因为对话历史逐字逐句塞进上下文时极其昂贵且很快撑爆窗口；
+    摘要保留了"人名、数字、结论"等关键事实，几十字就能替代几百字。
+    每轮都把它放进 system 消息，等于每轮都向模型"重申"一次旧事实，
+    模型看不到原始对话，但看得到事实本身——召回靠的是信息，不是原文。
+    """
+
+    def __init__(self, budget_tokens=800, turns_keep=2):
+        # budget_tokens：本轮发送的上下文（system+历史+新问题）总 token 上限
+        self.budget = budget_tokens
+        # turns_keep：无论怎么压缩，最近这几轮原文永远保留（最近的话最相关）
+        self.turns_keep = turns_keep
+        self.system_base = "你是项目助理，回答要简短。"
+        # history：多轮对话的原始历史，一条消息一个字典
+        self.history = []        # [{'role','content'}]
+        # facts_summary：旧历史被压缩后的摘要（为空说明还没触发过压缩）
+        self.facts_summary = ""  # 旧历史的压缩摘要
+
+    def _context_messages(self, user_text):
+        """拼出本轮真正发给模型的消息列表：system + 摘要 + 历史 + 新问题。"""
+        # 固定的系统提示永远排第一
+        messages = [{"role": "system", "content": self.system_base}]
+        if self.facts_summary:
+            # 关键一步：把旧历史的摘要放进 system 消息。
+            # system 消息每轮都会发送、且位置靠前权重高，
+            # 相当于每轮都帮模型复习一遍旧事实。
+            messages.append({
+                "role": "system",
+                "content": f"此前对话的关键事实（已压缩）：\n{self.facts_summary}"})
+        # 保留的最近几轮原文，给模型完整的近期语境
+        messages.extend(self.history)
+        # 最后附上本轮用户输入
+        messages.append({"role": "user", "content": user_text})
+        return messages
+
+    def _context_size(self, user_text):
+        """把即将发送的所有消息加起来，估一个总 token 数。"""
+        total = sum(estimate_tokens(m["content"]) for m in self._context_messages(user_text))
+        return total
+
+    def compress_if_needed(self, user_text):
+        """预检：若加入新消息会超预算，先压缩旧历史。
+        在"发送之前"做预算检查，而不是等 API 报错——
+        上下文溢出导致的报错整轮对话就断了。"""
+        # 循环压缩直到塞得下（history 空了就停，防止死循环）
+        while self._context_size(user_text) > self.budget and len(self.history) > 0:
+            before = self._context_size(user_text)
+            if len(self.history) <= self.turns_keep:
+                # 保留轮数都放不下：硬截断最旧的一条
+                # pop(0) 弹出列表第一条 = 最旧的消息
+                dropped = self.history.pop(0)
+                # 硬截断信息损失大，所以把被丢内容的前 50 字记进摘要留个底
+                self.facts_summary += f"\n（已丢弃：{dropped['content'][:50]}...）"
+                print(f"[budget] 硬截断最旧一条，当前历史 {len(self.history)} 条")
+                continue
+            # 正常路径：把最旧的若干轮交给模型压缩
+            # 切片：old = 保留区之外的全部旧消息
+            old = self.history[:len(self.history) - self.turns_keep]
+            self.history = self.history[len(self.history) - self.turns_keep:]
+            # 把旧消息拼成一段文字，交给模型提炼要点
+            transcript = "\n".join(f"{m['role']}: {m['content']}" for m in old)
+            print(f"[budget] 超预算（{before} > {self.budget}），压缩 {len(old)} 条旧消息")
+            # 压缩提示词刻意要求"保留人名、数字、结论"——
+            # 这些是后续问答最可能被引用的事实
+            self.facts_summary = chat([
+                {"role": "system", "content":
+                    "把下面的对话压缩成不超过100字的要点列表，"
+                    "保留人名、数字、结论等事实。只输出要点。"},
+                {"role": "user", "content": transcript},
+            ], max_tokens=800).strip()
+
+    def reply(self, user_text):
+        """处理一轮对话：先做预算检查，再真正调模型，最后把本轮写进历史。"""
+        # 发送前先压缩，确保不超预算
+        self.compress_if_needed(user_text)
+        # 打印本轮上下文规模：让"预算"从抽象概念变成可见的数字
+        print(f"[context] 本轮发送上下文 ≈ {self._context_size(user_text)} tokens "
+              f"(预算 {self.budget})")
+        answer = chat(self._context_messages(user_text))
+        # 把本轮的用户输入和模型回答追加进历史，供下一轮使用
+        self.history.append({"role": "user", "content": user_text})
+        self.history.append({"role": "assistant", "content": answer})
+        return answer
+
+
+# ========================= 5. 演示主流程 =========================
+# 预设的演示对话：前 5 轮不断提供新事实，把历史越堆越大；
+# 第 6 轮突然问最初的事实（服务器编号 WH-01），
+# 此时原始历史多半已被压缩，答案必须来自摘要——这就是本案例要验证的点。
+# 元组里第二个元素是助教的预设回答（仅作文案展示，主流程实际不用它）。
+CONVERSATION = [
+    ("我们的课程平台叫 AgentLab，服务器在武汉机房，编号 WH-01。",
+     "记住了，AgentLab 在 WH-01。"),
+    ("平台有 300 个学生账号，每个账号限 5 个并发会话。",
+     "收到：300 账号，并发上限 5。"),
+    ("服务器上跑着评估服务，每晚 2 点跑一次全量评估，约 40 分钟。",
+     "了解：每晚 2 点全量评估，约 40 分钟。"),
+    ("评估用的数据集是课程题库 v7，一共 1200 道题。",
+     "好的：题库 v7，1200 题。"),
+    ("今年新招了 3 位助教：赵敏、钱峰、孙莉。",
+     "收到：3 位新助教。"),
+    ("对了，服务器编号是多少来着？", None),   # 关键：靠压缩摘要而不是原始历史记住
+]
+
+
+def main():
+    print("=" * 60)
+    print("M5 案例：token 预算与历史压缩")
+    print("=" * 60)
+    print(f"模型: {LLM_MODEL_ID} @ {LLM_BASE_URL}\n")
+
+    # 预算故意设得很小（180 tokens）+ 只保留最近 2 轮，
+    # 这样演示几轮之内必定触发压缩，方便观察
+    agent = BudgetChatAgent(budget_tokens=180, turns_keep=2)
+    for user_text, _ in CONVERSATION:
+        print(f"\n>>> 用户：{user_text}")
+        answer = agent.reply(user_text)
+        print(f"<<< 助手：{answer.strip()}")
+
+    # 最后一问靠的是摘要里的 WH-01，而不是原始对话——验证旧事实仍可召回
+    print("\n最终压缩摘要（系统提示中携带）：")
+    print(agent.facts_summary or "（未触发压缩）")
+
+
+if __name__ == "__main__":
+    main()
+````
+:::
+
+### 运行结果（真实输出节选）
+
+```text
+>>> 用户：评估用的数据集是课程题库 v7，一共 1200 道题。
+[budget] 超预算（224 > 180），压缩 4 条旧消息
+[context] 本轮发送上下文 ≈ 146 tokens (预算 180)
+<<< 助手：收到，已补充：评估数据集（课程题库 v7，1200 题）
+
+>>> 用户：对了，服务器编号是多少来着？
+[context] 本轮发送上下文 ≈ 142 tokens (预算 180)
+<<< 助手：节点编号是 WH-01。
+
+最终压缩摘要（系统提示中携带）：
+- 评估服务：全量评估，节点WH-01
+- 频率：每晚02:00
+- 时长：约40分钟
+```
+
+### 案例要点
+
+- 发送前用估算函数预检上下文规模，而不是等 API 报错
+- 压缩 = 旧历史交给模型提炼成摘要 + 保留最近 2 轮原文
+- 压缩摘要以 system 消息注入——所以'服务器编号'这类旧事实仍可被召回
+- 每次调用都打印当前上下文规模，让预算从隐形变可见
+
+## 10. Summary
+
+- Context 是为每次模型调用构建的选择性视图
+- 不同来源有不同的优先级
+- Token 预算需要合理分配
+- 选择策略：优先级、最近、相关性
+- 压缩策略：截断、总结、滑动窗口
+- 分离可信和不可信内容
+- 记录选择日志以便调试

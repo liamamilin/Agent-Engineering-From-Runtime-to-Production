@@ -1,0 +1,113 @@
+# 前言 {.unnumbered}
+
+## 课程目标
+
+完成本课程后，学习者将能够**设计、实现、调试、评估和生产化 Agent 系统**，而不依赖框架的抽象来理解底层机制。
+
+这是一门**能力构建课程**，不是框架调研课。
+
+## 核心定义
+
+本课程使用以下规范定义：
+
+> **Agent** 是一个有状态的运行时控制器（stateful runtime controller），它通过反复观察环境（environment）、构建决策上下文（context）、通过策略（policy，通常由模型支持）选择动作（action）、更新状态（state），并根据明确的成功、失败或预算条件终止（terminate），来追求任务规范（TaskSpec）。
+
+## 运行时问题
+
+对于每次 Agent 运行，学习者必须能够回答：
+
+1.  任务是什么？什么算成功？
+2.  Agent 观察到了什么？
+3.  什么状态被携带前进？
+4.  什么信息进入了模型上下文？
+5.  什么策略产生了下一个决策？
+6.  什么动作被允许并执行？
+7.  状态如何转移？
+8.  运行为何继续或停止？
+9.  我们如何知道结果是正确的？
+
+## 重要非等价关系
+
+- LLM ≠ Agent
+- Prompt ≠ Context
+- 聊天历史 ≠ State
+- 工具调用 ≠ Agent
+- RAG ≠ Agent
+- Workflow ≠ Agent（尽管 workflow 可能包含 agentic 节点）
+- Multi-agent ≠ 自动更好的 Agent
+
+## 课程结构
+
+| 模块 | 主题 | 主要产物 |
+|----|----|----|
+| M0 | Agent 系统心智模型 | 运行时分解 |
+| M1 | 模型运行时与结构化交互 | 模型适配器 |
+| M2 | 工具与动作接口 | 工具注册表/执行器 |
+| M3 | 状态、控制循环与终止 | 显式 Agent 运行时 |
+| M4 | 评估、追踪与故障分析 | 追踪 + 评估工具 |
+| M5 | 上下文工程与工作状态 | 上下文构建器 |
+| M6 | 检索、接地与证据 | 检索/证据层 |
+| M7 | 记忆与持久化 | 检查点 + 记忆策略 |
+| M8 | 规划、工作流与人类控制 | 规划器/工作流/HITL |
+| M9 | 委托、多 Agent 与协议 | 组合层 |
+| M10 | 安全、可靠性与资源控制 | 护栏/预算/可靠性 |
+| M11 | 生产交付与运维 | 可部署服务 + 运维 |
+| P1–P5 | 实战篇：联网 RAG / Deep Research / HITL 调研 / MCP / Coding Agent | 生产化实战系统 |
+| Capstone | 项目理解 Agent | 完整的生产级系统 |
+
+## 如何使用本书
+
+本书每章末尾都有一个**完整案例**：单文件、可直接运行的全部代码（不是片段），配真实运行输出。所有案例脚本位于 `code/` 目录。教学篇（M0–M11）建立概念与最小实现，实战篇（P1–P5）把它们组合成真实联网/真实文件系统上的生产化系统。
+
+## 如何运行全书案例
+
+**零依赖**：所有案例脚本只使用 Python 标准库，无需 `pip install` 任何第三方包。
+
+**三步运行**：
+
+1.  打开任意脚本，修改顶部的 3 个配置值：
+
+``` text
+LLM_BASE_URL  = "http://localhost:11434/v1"   # 你的 API 地址（OpenAI 兼容）
+LLM_API_KEY   = "ollama"                      # 你的 API Key
+LLM_MODEL_ID  = "qwen3.8:27b-mlx"             # 你的模型名
+```
+
+2.  运行：
+
+``` bash
+python code/M0_first_agent.py
+```
+
+3.  对照书中"运行结果（真实输出节选）"检查输出。
+
+**常用 provider 的配置对照**：
+
+| Provider | LLM_BASE_URL | LLM_API_KEY | LLM_MODEL_ID 示例 |
+|----|----|----|----|
+| Ollama（本地） | `http://localhost:11434/v1` | 任意非空字符串 | `qwen3.8:27b-mlx` |
+| DeepSeek | `https://api.deepseek.com/v1` | 你的 key | `deepseek-chat` |
+| OpenAI | `https://api.openai.com/v1` | 你的 key | `gpt-4o-mini` |
+| Moonshot | `https://api.moonshot.cn/v1` | 你的 key | `moonshot-v1-8k` |
+
+**实战篇（P1–P3）需要联网搜索**：P1/P2/P3 通过共享模块 `code/websearch.py` 访问真实网络，需要在其中配置一个免费搜索服务的 key（任选其一）：
+
+| 搜索服务 | 注册地址 | 免费额度 | 配置项 |
+|----|----|----|----|
+| Exa | [dashboard.exa.ai](https://dashboard.exa.ai) | 注册送免费额度 | `EXA_API_KEY` |
+| Parallel | [platform.parallel.ai](https://platform.parallel.ai) | 每月 \$5 免费额度 | `PARALLEL_API_KEY` |
+
+切换默认搜索服务：设置环境变量 `WEBSEARCH_PROVIDER=exa` 或 `parallel`，或修改 `websearch.py` 顶部配置区。P4（MCP）与 P5（Coding Agent）不联网，无需搜索 key。
+
+**注意事项**：
+
+- 工具调用类案例（M0/M2/M3/M8/Capstone 与 P4/P5）建议使用支持 function calling 的模型（书中默认 `qwen3.8:27b-mlx`；`M0_first_agent.py` 也可用 `qwen3.5:9b-mlx`）
+- 思考型模型（如 qwen3 思考模式）可能把 token 花在内部思考上，若答案为空可调大脚本中的 `max_tokens`——这正是 M4/M10 案例演示的故障模式
+- 各脚本的模型调用参数（超时、重试、max_tokens）已在脚本内设为稳妥默认值
+
+## 先决条件
+
+- Python 3.10+（标准库即可，无需安装第三方包）
+- 一个可访问的 OpenAI 兼容 LLM API（本地 Ollama 或任意云服务）
+- 基本的机器学习/深度学习概念
+- 对 LLM（大语言模型）的基本了解

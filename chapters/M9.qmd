@@ -1,0 +1,618 @@
+# M9 — Delegation, Multi-Agent & Protocols
+
+## Learning Objectives
+
+By the end of this module, the learner can:
+
+- 理解 composition before multi-agent 原则
+- 实现 agent-as-tool 模式，将一个 Agent 作为另一个 Agent 的工具
+- 实现 handoff 模式，在 Agent 之间转移控制权
+- 实现 supervisor/worker 模式，协调多个专业 Agent
+- 理解 shared vs isolated context 的权衡
+- 评估 multi-agent 系统相比 single-agent 的优劣
+
+## 1. Engineering Problem
+
+单个 Agent 的能力有限，面对复杂任务时可能需要：
+
+1. **专业化分工**：不同 Agent 擅长不同任务
+2. **并行处理**：多个 Agent 同时处理不同子任务
+3. **权限分离**：不同 Agent 有不同权限级别
+4. **故障隔离**：一个 Agent 失败不影响其他 Agent
+
+但 multi-agent 系统也带来挑战：
+- 通信开销
+- 协调复杂性
+- 上下文泄漏风险
+- 成本增加
+
+## 2. Mental Model
+
+### 2.1 Composition Before Multi-Agent
+
+在引入多个 Agent 之前，先考虑是否可以通过 composition 解决：
+
+```text
+Single Agent with Tools (preferred if possible)
+    ↓
+Single Agent with Agent-as-Tool (composition)
+    ↓
+Multi-Agent System (only when necessary)
+```
+
+**原则**：如果单个 Agent 加上工具就能解决问题，就不要引入 multi-agent。
+
+### 2.2 Agent-as-Tool Pattern
+
+将一个 Agent 包装成工具，供另一个 Agent 调用：
+
+```text
+Coordinator Agent
+    ↓ (calls as tool)
+Specialized Agent
+    ↓ (executes task)
+Returns result to Coordinator
+```
+
+**优点**：
+- Coordinator 保持控制权
+- Specialized Agent 可以专注自己的领域
+- 接口简单，易于理解
+
+### 2.3 Handoff Pattern
+
+Agent 之间转移控制权：
+
+```text
+Agent A (handling task)
+    ↓ (determines Agent B is better suited)
+Handoff to Agent B
+    ↓
+Agent B (continues task)
+```
+
+**适用场景**：
+- 任务需要不同专业知识
+- Agent 达到能力边界
+- 需要不同权限级别
+
+### 2.4 Supervisor/Worker Pattern
+
+Supervisor 协调多个 Worker：
+
+```text
+Supervisor Agent
+    ↓ (decomposes task)
+    ├→ Worker 1 (research)
+    ├→ Worker 2 (analysis)
+    └→ Worker 3 (writing)
+    ↓ (aggregates results)
+Final result
+```
+
+**优点**：
+- 清晰的责任分离
+- 可以并行执行
+- 易于扩展
+
+### 2.5 Communication Patterns
+
+Agent 之间如何通信：
+
+| 模式 | 特征 | 适用场景 |
+|------|------|----------|
+| Direct Call | 同步，阻塞 | Agent-as-tool |
+| Message Passing | 异步，非阻塞 | Handoff, Supervisor/Worker |
+| Shared State | 共享内存 | 紧密协作 |
+| Event Bus | 发布/订阅 | 松耦合系统 |
+
+### 2.6 Context Isolation
+
+Multi-agent 系统中的重要问题：
+
+```text
+Agent A Context          Agent B Context
+┌─────────────┐          ┌─────────────┐
+│ Task Info   │          │ Task Info   │
+│ History     │  ──→     │ History     │
+│ Evidence    │  handoff │ Evidence    │
+│ Internal    │          │ Internal    │
+│ State       │          │ State       │
+└─────────────┘          └─────────────┘
+     ↑                        ↑
+     └──────── Shared ────────┘
+         Context (minimal)
+```
+
+**原则**：只传递必要的上下文，避免内部状态泄漏。
+
+## 3. Runtime Walkthrough
+
+### 3.1 Agent-as-Tool Execution
+
+```python
+# 1. 创建 specialized agent
+specialized_model = FakeModel(responses=[...])
+specialized_agent = Agent(model=specialized_model)
+
+# 2. 包装为 tool
+agent_tool = AgentAsTool(
+    agent=specialized_agent,
+    name="research_agent",
+    description="Research agent",
+    input_schema={"query": {"type": "string"}},
+)
+
+# 3. Coordinator 调用
+result = agent_tool.execute(query="AI trends")
+# result = {"result": "...", "success": True, ...}
+```
+
+### 3.2 Handoff Execution
+
+```python
+# 1. 创建 agents
+agent_a = Agent(model=model_a)
+agent_b = Agent(model=model_b)
+
+# 2. 创建 handoff manager
+agents = {"agent_a": agent_a, "agent_b": agent_b}
+manager = HandoffManager(agents, policy=HandoffPolicy())
+
+# 3. 执行任务
+result = manager.execute_with_handoff(
+    initial_agent_id="agent_a",
+    task=task,
+)
+# 如果 agent_a 达到 max_steps，自动 handoff 到 agent_b
+```
+
+### 3.3 Supervisor/Worker Execution
+
+```python
+# 1. 创建 workers
+worker1 = Worker("researcher", agent1, ["research"])
+worker2 = Worker("writer", agent2, ["writing"])
+
+# 2. 创建 supervisor
+supervisor = Supervisor(
+    supervisor_agent=supervisor_agent,
+    workers=[worker1, worker2],
+)
+
+# 3. 执行任务
+result = supervisor.execute_with_workers(task)
+# Supervisor 分解任务，分配给 workers，聚合结果
+```
+
+## 4. Minimal Implementation
+
+### 4.1 AgentAsTool
+
+```python
+@dataclass
+class AgentAsTool:
+    agent: Agent
+    name: str
+    description: str
+    input_schema: dict[str, Any]
+    
+    def get_tool_schema(self) -> ToolSchema:
+        """Convert agent to tool schema."""
+        parameters = []
+        for param_name, param_info in self.input_schema.items():
+            param = ToolParameter(
+                name=param_name,
+                type=ParameterType(param_info.get("type", "string")),
+                description=param_info.get("description", ""),
+            )
+            parameters.append(param)
+        
+        return ToolSchema(
+            name=self.name,
+            description=self.description,
+            parameters=parameters,
+        )
+    
+    def execute(self, **kwargs: Any) -> dict[str, Any]:
+        """Execute the agent."""
+        task = TaskSpec(goal=kwargs.get("query", str(kwargs)))
+        result = self.agent.run(task)
+        return {
+            "result": result.output,
+            "success": result.success,
+        }
+```
+
+### 4.2 Handoff
+
+```python
+@dataclass
+class Handoff:
+    from_agent: str
+    to_agent: str
+    reason: str
+    context: dict[str, Any]
+    
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "from_agent": self.from_agent,
+            "to_agent": self.to_agent,
+            "reason": self.reason,
+            "context": self.context,
+        }
+
+class HandoffPolicy:
+    def should_handoff(
+        self,
+        current_agent: str,
+        state: AgentState,
+        available_agents: list[str],
+    ) -> HandoffDecision:
+        """Determine if should handoff."""
+        if state.status == "completed":
+            return HandoffDecision.COMPLETE
+        
+        if state.step_count >= self.max_steps_per_agent:
+            return HandoffDecision.HANDOFF
+        
+        return HandoffDecision.CONTINUE
+```
+
+### 4.3 Supervisor/Worker
+
+```python
+@dataclass
+class Worker:
+    worker_id: str
+    agent: Agent
+    capabilities: list[str]
+    
+    def can_handle(self, task_description: str) -> bool:
+        """Check if worker can handle task."""
+        task_lower = task_description.lower()
+        for capability in self.capabilities:
+            if capability.lower() in task_lower:
+                return True
+        return False
+    
+    def execute_task(self, task: TaskSpec) -> dict[str, Any]:
+        """Execute task."""
+        result = self.agent.run(task)
+        return {
+            "worker_id": self.worker_id,
+            "result": result.output,
+            "success": result.success,
+        }
+
+class Supervisor:
+    def __init__(self, supervisor_agent: Agent, workers: list[Worker]):
+        self.supervisor_agent = supervisor_agent
+        self.workers = {w.worker_id: w for w in workers}
+    
+    def decompose_task(self, task: TaskSpec) -> list[dict[str, Any]]:
+        """Decompose task into subtasks."""
+        subtasks = []
+        if "research" in task.goal.lower():
+            subtasks.append({
+                "task_id": "research_1",
+                "description": f"Research: {task.goal}",
+                "required_capability": "research",
+            })
+        return subtasks
+    
+    def assign_worker(self, subtask: dict[str, Any]) -> str | None:
+        """Assign worker to subtask."""
+        required = subtask.get("required_capability")
+        for worker_id, worker in self.workers.items():
+            if required is None or required in worker.capabilities:
+                return worker_id
+        return None
+```
+
+## 5. Failure Modes
+
+| 层级 | 故障 | 示例 |
+|------|------|------|
+| Composition | 无限委托 | Agent A 委托给 B，B 又委托给 A |
+| Composition | 上下文泄漏 | Agent 内部状态暴露给其他 Agent |
+| Composition | 重复工作 | 多个 Agent 执行相同任务 |
+| Reliability | 消息丢失 | 消息未到达目标 Agent |
+| Control | 死锁 | Agent 互相等待消息 |
+| Control | 结果冲突 | 不同 Agent 返回矛盾结果 |
+| Resource | 成本爆炸 | Multi-agent 开销远超 single-agent |
+
+**调试规则**：在提出修复方案之前，先将观察到的故障映射到规范分类法的层级（Task, Observation, Context, Policy, Action, Transition, Control, Knowledge, Memory, Composition, Safety, Reliability, Resource, Evaluation）。
+
+**工程规则**：
+1. 优先使用 single-agent + tools
+2. 明确定义通信协议
+3. 限制委托深度
+4. 隔离 Agent 上下文
+5. 监控 multi-agent 开销
+
+## 6. Engineering Upgrade
+
+从最小实现到生产级：
+
+1. **添加消息持久化**：防止消息丢失
+2. **添加超时机制**：防止无限等待
+3. **添加负载均衡**：动态分配任务给 workers
+4. **添加故障恢复**：Worker 失败时重新分配
+5. **添加监控仪表板**：可视化 Agent 协作
+
+## 7. Lab
+
+构建一个 multi-agent 系统，演示：
+- Agent-as-tool 模式
+- Handoff 模式
+- Supervisor/Worker 模式
+- 与 single-agent baseline 的比较
+
+可直接运行的完整案例见本章末尾“完整案例”一节，脚本位于 `code/` 目录。
+
+## 8. Evaluation
+
+- Composed system is evaluated against single-agent baseline
+- Communication payload is typed/structured
+- Context leakage boundary is demonstrated
+- Multi-agent is rejected for at least one case where it adds no value
+
+## 9. What Changed in Our Agent?
+
+本模块添加了 `composition/` 子包：
+
+- `message.py`: AgentMessage, MessageBus
+- `agent_tool.py`: AgentAsTool
+- `handoff.py`: Handoff, HandoffPolicy, HandoffManager
+- `supervisor.py`: Worker, Supervisor, TaskDelegation
+
+这些组件让 Agent 可以组合和协作，形成 multi-agent 系统。
+
+## 10. 完整案例：多 Agent 委派与综合 {#sec-m9-case}
+
+完整脚本位于 `code/M9_delegation.py`。
+```text
+LLM_BASE_URL  = "http://localhost:11434/v1"   # 你的 API 地址（OpenAI 兼容）
+LLM_API_KEY   = "ollama"                      # 你的 API Key
+LLM_MODEL_ID  = "qwen3.8:27b-mlx"             # 你的模型名
+```
+
+所有案例脚本**零第三方依赖**（纯 Python 标准库），任何 OpenAI 兼容 API（Ollama、DeepSeek、OpenAI 等）都可以使用。
+
+### 运行方式
+
+```bash
+python code/M9_delegation.py
+```
+
+### 完整代码
+
+::: {.callout-note collapse="true"}
+## 点击展开完整代码
+
+````python
+# -*- coding: utf-8 -*-
+"""
+M9 完整案例 — Multi-Agent：委派、子 Agent 与结果综合
+=====================================================
+
+运行前只需修改下面 3 行配置（任何 OpenAI 兼容 API 都可以）：
+
+    LLM_BASE_URL   例如 http://localhost:11434/v1（Ollama）
+                     或 https://api.deepseek.com/v1
+    LLM_API_KEY    本地 Ollama 随便填，云端填你的 key
+    LLM_MODEL_ID   例如 qwen3.8:27b-mlx
+
+运行：  python M9_delegation.py
+
+本案例演示本章核心概念：
+  1. 主 Agent 负责拆解与综合，子 Agent 负责专项工作（职责分离）
+  2. 每个子 Agent 有独立的系统提示与专长，互不共享上下文——
+     传递给它们的只有任务描述，这正是"委派"的含义
+  3. 拆解是结构化输出：主 Agent 输出子任务 JSON，解析失败要重试
+  4. 子 Agent 结果回到主 Agent 综合成最终结论，附上"谁贡献了什么"
+
+如何阅读本文件（写给零基础读者）：
+  - 全文按 1~5 分区从上往下读：配置 -> 迷你客户端 -> 子 Agent 定义 -> 主 Agent -> 主流程。
+  - "多 Agent"听起来复杂，本质是分工：主 Agent 像项目经理，只做三件事——
+    把大任务拆成小任务、把小任务交给合适的专家（委派）、把专家的产出拼成最终答案（综合）。
+  - 关键概念"上下文隔离"：子 Agent 每次只收到自己的任务描述，看不到主 Agent 的
+    完整对话，也看不到其他子 Agent 说了什么。好处是每个子 Agent 提示词短、
+    注意力集中、不会被无关信息干扰；代价是信息要靠任务描述显式传递。
+  - 每个"Agent"在这里就是"一段系统提示 + 一次模型调用"，没有更神秘的东西。
+"""
+
+import json
+import re
+import time
+import urllib.error
+import urllib.request
+
+# ========================= 1. 配置区：只改这里 =========================
+LLM_BASE_URL = "http://localhost:11434/v1"   # 你的 API 地址（OpenAI 兼容）
+LLM_API_KEY = "ollama"                       # 你的 API Key
+LLM_MODEL_ID = "qwen3.8:27b-mlx"             # 你的模型名
+# =======================================================================
+
+
+# ========================= 2. Mini 客户端 =========================
+def chat(messages, temperature=0.0, max_retries=3, timeout=180, max_tokens=2000):
+    """调用大模型的最小客户端（与 M7 相同）：urllib 发请求 + 失败重试。"""
+    # OpenAI 兼容接口的固定路径：基础地址 + /chat/completions
+    url = LLM_BASE_URL.rstrip("/") + "/chat/completions"
+    # 请求体：模型名 + 对话历史 + 生成参数，打包成 JSON 字节串
+    payload = json.dumps({"model": LLM_MODEL_ID, "messages": messages,
+                          "temperature": temperature,
+                          "max_tokens": max_tokens}).encode("utf-8")
+    # 请求头：内容类型 + Bearer 鉴权
+    headers = {"Content-Type": "application/json",
+               "Authorization": f"Bearer {LLM_API_KEY}"}
+    last_error = None
+    # 网络不可靠，重试 max_retries 次；2**attempt 是指数退避（1s、2s、4s...）
+    for attempt in range(max_retries + 1):
+        try:
+            request = urllib.request.Request(url, data=payload, headers=headers)
+            with urllib.request.urlopen(request, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            usage = data.get("usage", {})
+            # 打印 token 用量：多 Agent 会多次调用模型，成本更要盯紧
+            print(f"[model] tokens: prompt={usage.get('prompt_tokens', '?')} "
+                  f"completion={usage.get('completion_tokens', '?')}")
+            return data["choices"][0]["message"]["content"]
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as e:
+            last_error = e
+            if attempt < max_retries:
+                time.sleep(2 ** attempt)
+    raise RuntimeError(f"模型调用失败（已重试 {max_retries} 次）：{last_error}")
+
+
+def extract_json(text):
+    """从模型回复里解析 JSON：先试整体解析，再试 ```json 代码块。"""
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    # 模型常把 JSON 包在 Markdown 代码块里，用正则抠出中间部分
+    match = re.search(r"```json\s*\n?(.*?)\n?```", text, re.DOTALL)
+    if match:
+        return json.loads(match.group(1))
+    raise ValueError(f"回复中找不到合法 JSON：{text[:120]!r}...")
+
+
+# ========================= 3. 子 Agent 定义 =========================
+# 每个"子 Agent"就是一段专属系统提示：key 是主 Agent 指派时用的代号，
+# "system" 是它的人设/专长。子 Agent 互相不知道对方存在（上下文隔离）。
+SUB_AGENTS = {
+    "analyst": {
+        "name": "需求分析师",
+        "system": "你是需求分析师，站在教学效果角度分析问题，"
+                  "回答不超过 100 字，给出 2-3 条要点。",
+    },
+    "cost": {
+        "name": "成本评估师",
+        "system": "你是成本评估师，站在工程与维护成本角度分析问题，"
+                  "回答不超过 100 字，给出 2-3 条要点。",
+    },
+}
+
+
+def delegate_to(name, task):
+    """委派：把任务交给指定子 Agent。子 Agent 看不到主 Agent 的上下文。
+    注意这里 messages 只有两条：子 Agent 的专属系统提示 + 任务描述本身，
+    没有任何主 Agent 的对话历史——这就是"上下文隔离"的实现方式。"""
+    # 用 key 从花名册里取出这个子 Agent 的名字和系统提示
+    agent = SUB_AGENTS[name]
+    print(f"[委派] -> {agent['name']}：{task[:50]}...")
+    output = chat([
+        {"role": "system", "content": agent["system"]},
+        {"role": "user", "content": task},
+    ])
+    print(f"[返回] <- {agent['name']} 完成")
+    # 返回"谁 + 干了什么 + 干出了什么"，主 Agent 综合时要靠这份记录
+    return {"agent": agent["name"], "task": task, "output": output.strip()}
+
+
+# ========================= 4. 主 Agent：拆解 -> 委派 -> 综合 =========================
+def split_task(main_task, max_attempts=3):
+    """主 Agent 把任务拆成指派给子 Agent 的子任务（结构化输出）。
+    拆解也是一次模型调用：让主 Agent 读任务和"专家花名册"，输出指派方案。"""
+    # 把子 Agent 花名册拼成清单文本，塞进提示词，主 Agent 才知道有哪些专家可用
+    roster = "\n".join(f"- {key}: {a['name']}" for key, a in SUB_AGENTS.items())
+    messages = [
+        {"role": "system", "content":
+            "你是主 Agent。把用户任务拆成 2 个子任务，分别委派给这些专家：\n"
+            f"{roster}\n"
+            '输出 JSON：[{"agent": "专家key", "task": "给该专家的任务描述"}]，'
+            "任务描述不超过 60 字。只输出 JSON。"},
+        {"role": "user", "content": main_task},
+    ]
+    # 结构化输出可能失败（不是 JSON、指派了不存在的专家），最多重试 3 次
+    for attempt in range(1, max_attempts + 1):
+        try:
+            subtasks = extract_json(chat(messages))
+            # 校验：每一项得是字典，且 agent 字段必须是花名册里真实存在的 key，
+            # 防止模型编造出一个不存在的专家
+            valid = [s for s in subtasks
+                     if isinstance(s, dict) and s.get("agent") in SUB_AGENTS]
+            if len(valid) >= 2:
+                return valid[:2]
+            raise ValueError(f"有效子任务不足 2 个：{subtasks}")
+        except (ValueError, json.JSONDecodeError) as e:
+            print(f"[split attempt {attempt}] 解析失败：{e}")
+    raise RuntimeError("任务拆解失败")
+
+
+def run_main_agent(main_task):
+    """主 Agent 的完整一轮：拆解 -> 逐个委派 -> 汇总综合。
+    注意主 Agent 自己不分析问题，它只做组织协调工作。"""
+    print(f"[主 Agent] 接到任务：{main_task}")
+    # 第一步：拆解
+    subtasks = split_task(main_task)
+    results = []
+    # 第二步：委派——按拆解结果逐个调用子 Agent，收集它们各自的产出
+    for s in subtasks:
+        results.append(delegate_to(s["agent"], s["task"]))
+
+    # 把所有子 Agent 报告拼成一段文本，标明每段是谁写的、任务是啥
+    contributions = "\n\n".join(
+        f"【{r['agent']}】（任务：{r['task']}）\n{r['output']}" for r in results)
+    # 第三步：综合——主 Agent 再调一次模型，把子报告熔成最终结论
+    final = chat([
+        {"role": "system", "content":
+            "你是主 Agent。综合子 Agent 的报告给出最终建议，"
+            "格式：结论一句话 + 理由 3 条以内，不超过 150 字。"},
+        {"role": "user", "content": f"主任务：{main_task}\n\n子 Agent 报告：\n{contributions}"},
+    ])
+    print(f"\n[综合] 主 Agent 最终结论：\n{final.strip()}")
+    return results, final
+
+
+# ========================= 5. 演示主流程 =========================
+def main():
+    print("=" * 60)
+    print("M9 案例：多 Agent 委派与综合")
+    print("=" * 60)
+    print(f"模型: {LLM_MODEL_ID} @ {LLM_BASE_URL}\n")
+
+    task = ("我们课程平台（300 名学生、每晚跑全量评估）在考虑是否引入"
+            "LLM 自动批改主观题的功能，请分析该不该做。")
+    # 一个"该不该做"的决策题，正好需要效果、成本两个视角 -> 两个子 Agent
+    run_main_agent(task)
+    print("\n要点：主 Agent 没有亲自回答，它只做了拆解、委派、综合三件事；"
+          "子 Agent 之间互不知晓对方的存在。")
+
+
+if __name__ == "__main__":
+    main()
+````
+:::
+
+### 运行结果（真实输出节选）
+
+```text
+[主 Agent] 接到任务：……是否引入 LLM 自动批改主观题的功能，请分析该不该做。
+[委派] -> 需求分析师：分析引入LLM批改的需求、技术可行性、准确率风险及教学影响
+[委派] -> 成本评估师：估算300名学生每晚全量LLM批改的API调用成本，对比人工批改ROI
+[综合] 主 Agent 最终结论：
+应引入，但采用"LLM初筛＋教师终审"模式。
+理由：①ROI＞99%，月成本约$460对比人工$6万，首月即回本；②300人/晚远超人工负荷，
+LLM吞吐完全可行；③须锚定评分标准并日抽检10%校准，防分数漂移。
+```
+
+### 案例要点
+
+- 主 Agent 只做三件事：拆解、委派、综合，不亲自回答
+- 子 Agent 各有独立系统提示，互不共享上下文——传递的只有任务描述
+- 拆解是结构化输出：无效的 agent key 会被过滤并重试
+- 综合时附上每个子 Agent 的任务与产出，结论可追溯
+
+## 10. Summary
+
+- Composition before multi-agent
+- Agent-as-tool: 将一个 Agent 作为另一个 Agent 的工具
+- Handoff: 在 Agent 之间转移控制权
+- Supervisor/Worker: 协调多个专业 Agent
+- 明确定义通信协议和上下文边界
+- 监控 multi-agent 开销，避免不必要的复杂性
+- Multi-agent 不是银弹，只在必要时使用

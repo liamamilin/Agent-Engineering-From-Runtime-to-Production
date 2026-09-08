@@ -1,0 +1,598 @@
+# M8 — Planning, Workflows & Human Control
+
+## Learning Objectives
+
+By the end of this module, the learner can:
+
+- 区分 reactive loop 和 explicit planning 两种控制架构
+- 实现 plan 表示和执行，支持步骤依赖
+- 实现 workflow/state machine 用于确定性控制流
+- 实现 human approval checkpoint 用于高风险操作
+- 理解何时使用 workflow 比 agentic freedom 更合适
+- 实现 replanning 机制应对计划失败
+
+## 1. Engineering Problem
+
+Agent 需要决定如何执行复杂任务，但面临以下选择：
+
+1. **Reactive vs Deliberative**：是逐步反应还是预先规划？
+2. **Freedom vs Control**：是给 Agent 自由还是限制在预定义流程中？
+3. **Automation vs Human-in-the-loop**：是全自动还是需要人类审批？
+4. **Rigidity vs Flexibility**：是严格执行计划还是允许动态调整？
+
+我们需要多种控制架构，根据任务特性选择合适的方案。
+
+## 2. Mental Model
+
+### 2.1 Two Control Architectures
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│  Reactive Loop (M3 已实现)                                  │
+│  - 每步动态决策                                             │
+│  - 灵活但不可预测                                           │
+│  - 适合探索性任务                                           │
+├─────────────────────────────────────────────────────────────┤
+│  Explicit Planning (本模块)                                 │
+│  - 预先制定计划                                             │
+│  - 可预测但可能僵化                                         │
+│  - 适合结构化任务                                           │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 2.2 Plan Representation
+
+Plan 由有序步骤组成，支持依赖关系：
+
+```text
+Plan: "Research and write report"
+├── Step 1: Search for information (no dependencies)
+├── Step 2: Analyze findings (depends on Step 1)
+├── Step 3: Write draft (depends on Step 2)
+└── Step 4: Review and edit (depends on Step 3)
+```
+
+### 2.3 Workflow/State Machine
+
+Workflow 是确定性的状态机，用于严格控制流程：
+
+```text
+States: initial → running → waiting_approval → completed
+                          ↓
+                        failed
+
+Transitions:
+- initial → running: start_task
+- running → waiting_approval: request_approval
+- waiting_approval → completed: execute_approved (if approved)
+- waiting_approval → failed: handle_rejection (if rejected)
+```
+
+### 2.4 Human Approval Checkpoints
+
+某些高风险操作需要人类审批：
+
+```text
+Agent wants to: delete_file("/important/data.txt")
+    ↓
+Create ApprovalCheckpoint
+    ↓
+Wait for human decision
+    ↓
+    ├─ Approved → Execute action
+    └─ Rejected → Skip or alternative
+```
+
+### 2.5 When to Use Which Architecture
+
+| 任务特性 | 推荐架构 | 原因 |
+|----------|----------|------|
+| 探索性、开放式 | Reactive Loop | 需要灵活性 |
+| 结构化、可预测 | Explicit Planning | 需要可预测性 |
+| 高风险操作 | Workflow + Approval | 需要严格控制 |
+| 简单、快速 | Reactive Loop | 规划开销不值得 |
+| 合规性要求 | Workflow | 需要审计轨迹 |
+
+## 3. Runtime Walkthrough
+
+### 3.1 Reactive Loop (Review)
+
+```python
+# M3 已实现的 reactive loop
+while not done:
+    observation = observe()
+    context = build_context(state, observation)
+    decision = policy.decide(context)  # 每步动态决策
+    result = execute(decision)
+    state = transition(state, decision, result)
+```
+
+### 3.2 Explicit Planning
+
+```python
+# 创建计划
+planner = Planner()
+plan = planner.create_plan(
+    plan_id="plan1",
+    goal="Research and write report",
+    steps_spec=[
+        {"id": "search", "description": "Search", "action": "search", "arguments": {...}},
+        {"id": "analyze", "description": "Analyze", "action": "analyze", "dependencies": ["search"]},
+        {"id": "write", "description": "Write", "action": "write", "dependencies": ["analyze"]},
+    ],
+)
+
+# 执行计划
+while not plan.is_completed():
+    next_step = plan.get_next_step(plan.get_completed_steps())
+    if next_step is None:
+        break
+    
+    # 检查是否需要审批
+    if next_step.requires_approval:
+        checkpoint = approval_manager.request_approval(...)
+        # 等待人类审批
+        while checkpoint.is_pending():
+            time.sleep(1)
+        
+        if checkpoint.is_rejected():
+            next_step.mark_failed("Rejected by human")
+            continue
+    
+    # 执行步骤
+    next_step.mark_in_progress()
+    result = execute_tool(next_step.action, next_step.arguments)
+    next_step.mark_completed(result)
+    
+    # 检查是否需要 replan
+    should_replan, trigger, reason = planner.should_replan(plan, results)
+    if should_replan:
+        plan = planner.replan(plan, trigger, reason, plan.get_completed_steps())
+```
+
+### 3.3 Workflow Execution
+
+```python
+# 创建带审批的 workflow
+workflow = create_approval_workflow("wf1", "Data Processing")
+
+# 执行 workflow
+while not workflow.is_completed():
+    if workflow.is_waiting_approval():
+        # 等待人类审批
+        approval = wait_for_approval()
+        workflow.update_context("approved", approval)
+    
+    available = workflow.get_available_transitions()
+    if not available:
+        break
+    
+    # 执行转换
+    transition_result = workflow.execute_transition(0)
+    action = transition_result["action"]
+    
+    # 执行对应的工具
+    result = execute_tool(action, transition_result["arguments"])
+```
+
+## 4. Minimal Implementation
+
+### 4.1 Plan and PlanStep
+
+```python
+@dataclass
+class PlanStep:
+    id: str
+    description: str
+    action: str
+    arguments: dict[str, Any] = field(default_factory=dict)
+    status: PlanStatus = PlanStatus.PENDING
+    dependencies: list[str] = field(default_factory=list)
+    requires_approval: bool = False
+    
+    def is_ready(self, completed_steps: set[str]) -> bool:
+        return (self.status == PlanStatus.PENDING and
+                all(dep in completed_steps for dep in self.dependencies))
+
+@dataclass
+class Plan:
+    id: str
+    goal: str
+    steps: list[PlanStep] = field(default_factory=list)
+    
+    def get_next_step(self, completed_steps: set[str]) -> PlanStep | None:
+        for step in self.steps:
+            if step.is_ready(completed_steps):
+                return step
+        return None
+```
+
+### 4.2 Planner
+
+```python
+class Planner:
+    def create_plan(self, plan_id: str, goal: str, steps_spec: list[dict]) -> Plan:
+        plan = Plan(id=plan_id, goal=goal)
+        for spec in steps_spec:
+            step = PlanStep(
+                id=spec["id"],
+                description=spec["description"],
+                action=spec["action"],
+                arguments=spec.get("arguments", {}),
+                dependencies=spec.get("dependencies", []),
+            )
+            plan.add_step(step)
+        return plan
+    
+    def replan(self, original: Plan, trigger: ReplanningTrigger, 
+               reason: str, completed: set[str]) -> Plan:
+        # 保留已完成的步骤，移除失败的步骤
+        new_plan = Plan(id=f"{original.id}_replan", goal=original.goal)
+        for step in original.steps:
+            if step.id in completed:
+                new_plan.add_step(copy_completed_step(step))
+            elif step.status != PlanStatus.FAILED:
+                new_plan.add_step(copy_pending_step(step))
+        return new_plan
+```
+
+### 4.3 Workflow
+
+```python
+@dataclass
+class Workflow:
+    id: str
+    current_state: str
+    transitions: list[WorkflowTransition] = field(default_factory=list)
+    
+    def execute_transition(self, transition_id: int) -> dict[str, Any]:
+        available = self.get_available_transitions()
+        transition = available[transition_id]
+        self.current_state = transition.to_state
+        return {"action": transition.action, "new_state": self.current_state}
+
+@dataclass
+class WorkflowTransition:
+    from_state: str
+    to_state: str
+    action: str
+    condition: Callable[[dict], bool] | None = None
+```
+
+### 4.4 ApprovalCheckpoint
+
+```python
+@dataclass
+class ApprovalCheckpoint:
+    id: str
+    action: str
+    arguments: dict[str, Any]
+    reason: str
+    status: ApprovalStatus = ApprovalStatus.PENDING
+    
+    def approve(self, approved_by: str) -> None:
+        self.status = ApprovalStatus.APPROVED
+    
+    def reject(self, rejected_by: str) -> None:
+        self.status = ApprovalStatus.REJECTED
+```
+
+## 5. Failure Modes
+
+| 层级 | 故障 | 示例 |
+|------|------|------|
+| Control | 计划不可行 | 步骤依赖循环 |
+| Control | 计划僵化 | 无法应对意外情况 |
+| Control | 死锁 | 没有可用的转换 |
+| Transition | 状态不一致 | 转换条件判断错误 |
+| Control | 审批超时 | 人类未及时响应 |
+| Control | 审批滥用 | 过多操作需要审批 |
+| Control | 无限 replan | 每次 replan 都失败 |
+
+**调试规则**：在提出修复方案之前，先将观察到的故障映射到规范分类法的层级（Task, Observation, Context, Policy, Action, Transition, Control, Knowledge, Memory, Composition, Safety, Reliability, Resource, Evaluation）。
+
+**工程规则**：
+1. 计划应该有明确的完成条件
+2. Workflow 应该有超时机制
+3. 审批请求应该有清晰的理由
+4. Replanning 应该有最大次数限制
+5. 记录执行轨迹用于审计
+
+## 6. Engineering Upgrade
+
+从最小实现到生产级：
+
+1. **添加并行步骤**：支持无依赖步骤并行执行
+2. **添加条件分支**：根据执行结果选择不同路径
+3. **添加审批超时**：自动处理未响应的审批
+4. **添加计划模板**：预定义常见任务的计划
+5. **添加可视化**：图形化展示计划和执行状态
+
+## 7. Lab
+
+构建一个支持两种控制架构的 Agent，演示：
+- 同一任务在 reactive loop 和 explicit planning 下的执行
+- Workflow 带审批 checkpoint
+- Replanning 应对步骤失败
+
+可直接运行的完整案例见本章末尾“完整案例”一节，脚本位于 `code/` 目录。
+
+## 8. Evaluation
+
+- 同一 benchmark 任务在两种架构下运行
+- Trace 显示控制差异
+- Human approval 可以暂停和恢复
+- Replanning 有明确的触发条件
+
+## 9. What Changed in Our Agent?
+
+本模块添加了 `planning/` 子包：
+
+- `plan.py`: Plan, PlanStep, PlanStatus
+- `planner.py`: Planner, ReplanningTrigger
+- `workflow.py`: Workflow, WorkflowState, WorkflowTransition
+- `approval.py`: ApprovalCheckpoint, ApprovalStatus, HumanApprovalPolicy, ApprovalManager
+
+这些组件让 Agent 可以选择不同的控制架构，支持显式规划和人类审批。
+
+## 10. 完整案例：计划、审批门与修订 {#sec-m8-case}
+
+完整脚本位于 `code/M8_plan_approve.py`。
+```text
+LLM_BASE_URL  = "http://localhost:11434/v1"   # 你的 API 地址（OpenAI 兼容）
+LLM_API_KEY   = "ollama"                      # 你的 API Key
+LLM_MODEL_ID  = "qwen3.8:27b-mlx"             # 你的模型名
+```
+
+所有案例脚本**零第三方依赖**（纯 Python 标准库），任何 OpenAI 兼容 API（Ollama、DeepSeek、OpenAI 等）都可以使用。
+
+### 运行方式
+
+```bash
+python code/M8_plan_approve.py
+```
+
+### 完整代码
+
+::: {.callout-note collapse="true"}
+## 点击展开完整代码
+
+````python
+# -*- coding: utf-8 -*-
+"""
+M8 完整案例 — Human in the Loop：计划、审批门与修订
+====================================================
+
+运行前只需修改下面 3 行配置（任何 OpenAI 兼容 API 都可以）：
+
+    LLM_BASE_URL   例如 http://localhost:11434/v1（Ollama）
+                     或 https://api.deepseek.com/v1
+    LLM_API_KEY    本地 Ollama 随便填，云端填你的 key
+    LLM_MODEL_ID   例如 qwen3.8:27b-mlx
+
+运行：  python M8_plan_approve.py
+
+本案例演示本章核心概念：
+  1. 先规划后执行：高风险任务先产出计划，人审批后再执行
+  2. 审批门（approval gate）：每个计划步骤执行前都要过人工确认
+  3. 拒绝≠终止：被拒的步骤回到模型修订，修订后再次送审
+  4. 演示中用脚本代替真人输入（生产中把 approve() 换成 input() 或审批系统）
+
+如何阅读本文件（写给零基础读者）：
+  - 全文按 1~5 分区从上往下读：配置 -> 迷你客户端 -> 审批门 -> 工作流 -> 主流程。
+  - 核心流程一句话：先让模型出"计划"，每个步骤执行前都要经过一个"审批门"，
+    人批准了才执行；被拒绝的步骤退回模型修改，改完再送审——这就是 HITL
+    （Human in the Loop，人在回路中）的落地方式。
+  - 为什么需要审批门？因为 Agent 会自己动手做事，如果涉及花钱、发消息、
+    删文件等高风险操作，必须有人在执行前把关，防止模型"好心办坏事"。
+  - 本文件所有与真人打交道的部分都被简化成固定脚本，方便课堂演示可复现。
+"""
+
+import json
+import re
+import time
+import urllib.error
+import urllib.request
+
+# ========================= 1. 配置区：只改这里 =========================
+LLM_BASE_URL = "http://localhost:11434/v1"   # 你的 API 地址（OpenAI 兼容）
+LLM_API_KEY = "ollama"                       # 你的 API Key
+LLM_MODEL_ID = "qwen3.8:27b-mlx"             # 你的模型名
+# =======================================================================
+
+
+# ========================= 2. Mini 客户端 =========================
+def chat(messages, temperature=0.0, max_retries=3, timeout=180, max_tokens=2000):
+    """调用大模型的最小客户端（与 M7 相同）：urllib 发 HTTP 请求，失败重试。"""
+    # OpenAI 兼容接口的固定路径：基础地址 + /chat/completions
+    url = LLM_BASE_URL.rstrip("/") + "/chat/completions"
+    # 请求体：模型名 + 完整对话历史 + 生成参数，打包成 JSON 字节串
+    payload = json.dumps({"model": LLM_MODEL_ID, "messages": messages,
+                          "temperature": temperature,
+                          "max_tokens": max_tokens}).encode("utf-8")
+    # 请求头：内容类型 + Bearer 鉴权
+    headers = {"Content-Type": "application/json",
+               "Authorization": f"Bearer {LLM_API_KEY}"}
+    last_error = None
+    # 网络调用不可靠，最多重试 max_retries 次；2**attempt 是"指数退避"：
+    # 每次失败后等待时间翻倍（1s、2s、4s...），避免把服务端打爆
+    for attempt in range(max_retries + 1):
+        try:
+            request = urllib.request.Request(url, data=payload, headers=headers)
+            with urllib.request.urlopen(request, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            usage = data.get("usage", {})
+            # 打印 token 用量，便于观察每次调用的成本
+            print(f"[model] tokens: prompt={usage.get('prompt_tokens', '?')} "
+                  f"completion={usage.get('completion_tokens', '?')}")
+            # 响应 JSON 层层嵌套，真正的话在 choices[0].message.content
+            return data["choices"][0]["message"]["content"]
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as e:
+            last_error = e
+            if attempt < max_retries:
+                time.sleep(2 ** attempt)
+    # 重试用尽仍未成功，把异常抛给上层处理
+    raise RuntimeError(f"模型调用失败（已重试 {max_retries} 次）：{last_error}")
+
+
+def extract_json(text):
+    """从模型回复里解析 JSON：先试整体解析，再试 ```json 代码块。"""
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    # 模型常把 JSON 包在 Markdown 代码块里，用正则抠出中间部分
+    match = re.search(r"```json\s*\n?(.*?)\n?```", text, re.DOTALL)
+    if match:
+        return json.loads(match.group(1))
+    raise ValueError(f"回复中找不到合法 JSON：{text[:120]!r}...")
+
+
+# ========================= 3. 人工审批门（演示用脚本替代真人） =========================
+# 生产中这里是 input("批准该步骤? [y/n] ") 或对接审批系统。
+# 演示脚本：第 2 步第一次拒绝（考察修订路径），其余批准。
+# SCRIPTED_DECISIONS 是留给真实交互改造的占位：换成 input() 循环即可变成真人审批
+SCRIPTED_DECISIONS = []
+
+
+def approve(step_no, step_text, revision=0):
+    """审批门：对每个计划步骤返回 批准(True) 或 拒绝(False)。
+    这是整个案例的"安全阀"——任何步骤在过这道门之前都不会被执行。"""
+    # 演示设定：第 2 步的初版（revision==0 表示还没修订过）被人为拒绝，
+    # 目的是让读者看到"拒绝 -> 修订 -> 再审批"这条路径长什么样
+    if revision == 0 and step_no == 2:
+        print(f"[审批门] 步骤 {step_no} -> 拒绝（脚本模拟，考察修订路径）")
+        return False
+    print(f"[审批门] 步骤 {step_no}{'（修订版）' if revision else ''} -> 批准")
+    return True
+
+
+# ========================= 4. 工作流：规划 -> 逐条审批 -> 执行 =========================
+def make_plan(task, rejected_step=None, feedback=None):
+    """生成计划（或对被拒步骤生成修订）。
+    rejected_step / feedback 只在被拒绝后重试时传入，用来告诉模型哪里不行。"""
+    # 基础提示词：把任务拆成 3 步，并要求输出 JSON 数组（结构化输出，方便程序处理）
+    messages = [
+        {"role": "system", "content":
+            "你是活动策划助手。把任务拆成 3 个可执行步骤，"
+            "输出 JSON 数组，每个元素是一个步骤字符串（不超过40字）。只输出 JSON。"},
+        {"role": "user", "content": f"任务：{task}"},
+    ]
+    # 如果某个步骤被否决，把"第几步 + 否决理由"追加到对话里，
+    # 让模型在同一轮上下文中给出修订版，而不是从头再猜
+    if rejected_step is not None:
+        messages.append({"role": "user", "content":
+            f"步骤 {rejected_step + 1} 被否决了，理由：{feedback}。"
+            f"请重新输出完整计划（3 步），替换被否决的步骤。只输出 JSON。"})
+    # 模型输出可能不合法，最多重试 3 次
+    for attempt in range(3):
+        try:
+            plan = extract_json(chat(messages))
+            # 结构校验：必须是列表，且步骤数在 2~5 之间才算合理计划
+            if isinstance(plan, list) and 2 <= len(plan) <= 5:
+                return [str(s) for s in plan]
+        except (ValueError, json.JSONDecodeError) as e:
+            print(f"[plan attempt {attempt+1}] 解析失败：{e}")
+    # 三次都失败就放弃：宁可明确报错，也不拿一份坏计划往下走
+    raise RuntimeError("计划生成失败")
+
+
+def execute_step(step_no, step_text, task):
+    """执行单个步骤：让模型把这一步落实成具体产出。
+    注意：能走到这里，说明该步骤已经通过了审批门。"""
+    # 把"总任务 + 当前步骤"都给模型，让它知道自己做的是全局中的哪一环
+    output = chat([
+        {"role": "system", "content":
+            "你在协助完成一个任务。请把下面的步骤落实成具体产出（一段可直接使用的文字，"
+            "不超过120字），不要复述步骤本身。"},
+        {"role": "user", "content": f"总任务：{task}\n当前步骤：{step_text}"},
+    ])
+    print(f"[执行] 步骤 {step_no} 产出：{output.strip()[:100]}...")
+    return output
+
+
+def run_workflow(task):
+    """完整工作流：规划 -> 每步过审批门 -> 批准才执行 -> 汇总。"""
+    print(f"[规划] 为任务生成计划：{task}")
+    # 第一步永远是先有计划，而不是直接开干
+    plan = make_plan(task)
+    for i, step in enumerate(plan):
+        print(f"  计划步骤 {i+1}: {step}")
+
+    results = []
+    # enumerate(plan) 同时给出下标 i 和步骤内容 step
+    for i, step in enumerate(plan):
+        # --- 审批门：先过人，再执行 ---
+        # revision 记录当前步骤被修订了几次
+        revision = 0
+        # while 循环：只要审批不通过，就不断修订、再送审
+        while not approve(i + 1, step, revision):
+            revision += 1
+            if revision > 2:
+                # 安全上限：修订两次仍被拒就跳过，防止无限循环
+                print(f"[审批门] 步骤 {i+1} 两次修订仍被拒，跳过该步骤")
+                break
+            # 把被拒步骤连同理由发回模型，取回修订后的第 i 步
+            plan = make_plan(task, rejected_step=i,
+                             feedback="太笼统/不切实际，请更具体")
+            step = plan[i]
+            print(f"[修订] 步骤 {i+1} 修订为：{step}")
+        else:
+            # Python 特有的 while...else：while 没被 break（即最终批准）才执行这里，
+            # 也就是说"执行"严格发生在"审批通过"之后
+            results.append(execute_step(i + 1, step, task))
+
+    print(f"\n[汇总] {len(results)} 个步骤执行完成")
+    return results
+
+
+# ========================= 5. 演示主流程 =========================
+def main():
+    print("=" * 60)
+    print("M8 案例：计划、审批门与修订")
+    print("=" * 60)
+    print(f"模型: {LLM_MODEL_ID} @ {LLM_BASE_URL}\n")
+
+    task = "为 90 分钟的班级技术分享会做筹备"
+    # 跑一遍完整工作流，观察步骤 2 走"拒绝 -> 修订 -> 再审批"的路径
+    run_workflow(task)
+    print("\n要点：步骤 2 走了 拒绝->修订->再审批 路径；"
+          "所有执行都发生在审批通过之后。")
+
+
+if __name__ == "__main__":
+    main()
+````
+:::
+
+### 运行结果（真实输出节选）
+
+```text
+[规划] 为任务生成计划：为 90 分钟的班级技术分享会做筹备
+  计划步骤 1: 确定分享主题与嘉宾，规划90分钟议程
+  计划步骤 2: 预订教室，调试投影与麦克风等设备
+  计划步骤 3: 发布通知邀请同学参加，提前一天彩排
+[审批门] 步骤 1 -> 批准
+[审批门] 步骤 2 -> 拒绝（脚本模拟，考察修订路径）
+[修订] 步骤 2 修订为：提前2天收齐PPT统一16:9模板，当天提前1小时调试设备
+[审批门] 步骤 2（修订版） -> 批准
+[审批门] 步骤 3 -> 批准
+[汇总] 3 个步骤执行完成
+```
+
+### 案例要点
+
+- 先规划后执行：3 步计划生成后逐条过审批门
+- `approve()` 是审批门的抽象：演示里用脚本代替真人，生产里换成 input() 或审批系统
+- 拒绝不终止工作流：被拒步骤回炉修订，修订版再次送审
+- 执行只发生在审批通过之后——人工控制在动作之前
+
+## 10. Summary
+
+- Reactive loop 灵活但不可预测
+- Explicit planning 可预测但可能僵化
+- Workflow 提供确定性控制流
+- Human approval 用于高风险操作
+- Replanning 应对计划失败
+- 根据任务特性选择合适的架构
+- 记录执行轨迹用于审计和调试

@@ -1,0 +1,65 @@
+project:
+  type: book
+
+book:
+  title: "Agent 工程：从运行时到生产"
+  subtitle: "Agent Engineering: From Runtime to Production"
+  author: "华中农业大学 大模型课程组"
+  date: "2026-08-28"
+  description: |
+    本课程教授如何设计、实现、调试、评估和生产化 Agent 系统，
+    不依赖框架抽象来理解底层机制。
+  chapters:
+    - part: "基础篇 — Foundations"
+      chapters:
+        - index.qmd
+        - chapters/M0.qmd
+        - chapters/M1.qmd
+        - chapters/M2.qmd
+        - chapters/M3.qmd
+    - part: "测量篇 — Measurement"
+      chapters:
+        - chapters/M4.qmd
+    - part: "信息与知识篇 — Information & Knowledge"
+      chapters:
+        - chapters/M5.qmd
+        - chapters/M6.qmd
+        - chapters/M7.qmd
+    - part: "控制架构篇 — Control Architecture"
+      chapters:
+        - chapters/M8.qmd
+    - part: "组合与生产篇 — Composition & Production"
+      chapters:
+        - chapters/M9.qmd
+        - chapters/M10.qmd
+        - chapters/M11.qmd
+    - part: "实战篇 — Practical Projects"
+      chapters:
+        - chapters/P1.qmd
+        - chapters/P2.qmd
+        - chapters/P3.qmd
+        - chapters/P4.qmd
+        - chapters/P5.qmd
+    - part: "综合项目 — Capstone"
+      chapters:
+        - chapters/Capstone.qmd
+    - references.qmd
+
+bibliography: references.bib
+
+format:
+  html:
+    theme:
+      - cosmo
+      - brand
+    code-copy: true
+    code-fold: true
+  pdf:
+    documentclass: scrreprt
+    CJKmainfont: "PingFang SC"
+
+execute:
+  freeze: auto
+
+editor: visual
+
