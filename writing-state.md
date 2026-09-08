@@ -3,7 +3,7 @@
 ## Book Metadata
 
 - title: Agent 工程：从运行时到生产（Agent Engineering: From Runtime to Production）
-- author: 华中农业大学 大模型课程组
+- author: 米霖
 - book_type: 技术书（工程教程）
 - target_reader: 要构建可靠 Agent 系统的工程师/学生
 - total_parts: 7（基础/测量/信息与知识/控制架构/组合与生产/实战/Capstone）

@@ -4,7 +4,7 @@ project:
 book:
   title: "Agent 工程：从运行时到生产"
   subtitle: "Agent Engineering: From Runtime to Production"
-  author: "华中农业大学 大模型课程组"
+  author: "米霖"
   date: "2026-08-28"
   description: |
     本课程教授如何设计、实现、调试、评估和生产化 Agent 系统，
