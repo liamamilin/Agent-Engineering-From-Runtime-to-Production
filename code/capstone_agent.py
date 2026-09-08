@@ -1,0 +1,294 @@
+# -*- coding: utf-8 -*-
+"""
+Capstone 完整案例 — 项目理解 Agent（整合全课程能力）
+=====================================================
+
+运行前只需修改下面 3 行配置（任何 OpenAI 兼容 API 都可以）：
+
+    LLM_BASE_URL   例如 http://localhost:11434/v1（Ollama）
+                     或 https://api.deepseek.com/v1
+    LLM_API_KEY    本地 Ollama 随便填，云端填你的 key
+    LLM_MODEL_ID   例如 qwen3.8:27b-mlx（工具调用建议用较大模型）
+
+运行：  python capstone_agent.py
+
+本案例整合全书能力，构建一个"项目理解 Agent"：
+  M2/M3  工具调用 + 控制循环（探索文件系统，步数上限）
+  M5     上下文预算（读文件总量受限，读不下的要跳过）
+  M6     证据引用（报告中的每个结论都要标注来源文件）
+  M10    防护栏（token 预算超限优雅停止）
+  M11    交付形态（报告落盘 capstone_report.json，全程有日志）
+
+Agent 的任务：探索一个陌生的小项目，产出结构化的理解报告
+（项目用途、入口文件、目录结构、风险点），每个结论标注证据。
+
+如何阅读本文件（写给零基础读者）：
+  - 全文按 1~7 分区从上往下读：配置 -> 支持工具的迷你客户端 -> 预算护栏 ->
+    演示项目生成 -> 工具定义 -> 控制循环 -> 主流程。
+  - 这是全书的"毕业设计"，核心是第 6 区的"工具循环"（Agent Loop）：
+    模型提出要用哪个工具 -> 程序执行工具并把结果喂回去 -> 模型基于结果继续决策，
+    如此往复，直到模型主动调用 finish 工具交报告、或步数/预算用尽。
+    模型自己只会"说"，所有"做"（读文件、列目录）都是我们替它执行的。
+  - token 预算在这里被整合进循环：每轮调用后记账（Budget.spend），
+    超限立即优雅停止，而不是中途崩溃——这是 M10 护栏在真实任务中的用法。
+  - 建议对照运行输出读代码：每一行 [step n]、-> 工具名 都能对应到循环里的一行。
+"""
+
+import json
+import os
+import time
+import urllib.error
+import urllib.request
+
+# ========================= 1. 配置区：只改这里 =========================
+LLM_BASE_URL = "http://localhost:11434/v1"   # 你的 API 地址（OpenAI 兼容）
+LLM_API_KEY = "ollama"                       # 你的 API Key
+LLM_MODEL_ID = "qwen3.8:27b-mlx"             # 你的模型名（建议支持 tools 的模型）
+# =======================================================================
+
+# 被分析的演示项目放在这个目录里（首次运行时自动生成，见 build_project）
+PROJECT_DIR = "capstone_demo_project"
+# 探索 + 写报告的总 token 预算：模型每轮调用都从这里扣款，用完即停
+BUDGET_TOKENS = 20000   # 探索 + 写报告的总 token 预算
+
+
+# ========================= 2. Mini 客户端（支持工具） =========================
+def chat(messages, tools=None, temperature=0.0, timeout=180, max_tokens=3000):
+    """支持"工具调用"的迷你客户端：把工具清单一并交给模型，
+    模型可以回复"我想调用某工具"（tool_calls），由我们的代码真正去执行。"""
+    # OpenAI 兼容接口的固定路径：基础地址 + /chat/completions
+    url = LLM_BASE_URL.rstrip("/") + "/chat/completions"
+    # 基础请求体：模型名 + 对话历史 + 生成参数
+    payload = {"model": LLM_MODEL_ID, "messages": messages,
+               "temperature": temperature, "max_tokens": max_tokens}
+    # 如果提供了工具清单，就按 API 要求的格式（type=function 包一层）放进请求体
+    if tools:
+        payload["tools"] = [{"type": "function", "function": t} for t in tools]
+    headers = {"Content-Type": "application/json",
+               "Authorization": f"Bearer {LLM_API_KEY}"}
+    request = urllib.request.Request(
+        url, data=json.dumps(payload).encode("utf-8"), headers=headers)
+    with urllib.request.urlopen(request, timeout=timeout) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    # 返回 (完整的 assistant 消息, 用量)：注意这里返回整个消息而不只是文本，
+    # 因为消息里可能带 tool_calls 字段（模型想调用工具的请求）
+    return data["choices"][0]["message"], data.get("usage", {})
+
+
+# ========================= 3. 防护栏（M10） =========================
+class Budget:
+    """累计 token 预算（M10 护栏思想的极简版）：
+    spend() 负责记账并在超限时返回 False，调用方据此优雅停止。"""
+
+    def __init__(self, limit):
+        self.limit = limit
+        # used 是记账本：每轮模型调用后累加
+        self.used = 0
+
+    def spend(self, tokens):
+        """记账一次调用。返回 True 表示还有余量可以继续；False = 预算耗尽。"""
+        self.used += tokens
+        if self.used >= self.limit:
+            print(f"[budget] 预算耗尽 {self.used}/{self.limit}")
+            return False
+        return True
+
+
+# ========================= 4. 目标项目：运行时生成的演示项目 =========================
+# 三个演示文件的内容（字符串形式）：一个故意留了 BUG 的小待办工具，
+# 让 Agent 探索时能有"风险点"可写。todo.py 的 complete() 越界会抛异常。
+DEMO_FILES = {
+    "README.md": "# taskcli\n一个命令行待办事项工具。\n支持 add/list/done 三个子命令。\n",
+    "main.py": (
+        "import sys\nfrom todo import TodoList\n\ndef main():\n"
+        "    cmd = sys.argv[1]\n    todo = TodoList('todo.json')\n"
+        "    if cmd == 'add':\n        todo.add(' '.join(sys.argv[2:]))\n"
+        "    elif cmd == 'list':\n        print(todo.format_all())\n"
+        "    elif cmd == 'done':\n        todo.complete(int(sys.argv[2]))\n\n"
+        "if __name__ == '__main__':\n    main()\n"
+    ),
+    "todo.py": (
+        "import json\n\nclass TodoList:\n"
+        "    def __init__(self, path):\n        self.path = path\n\n"
+        "    def add(self, text):\n"
+        "        items = self._load()\n        items.append({'text': text, 'done': False})\n"
+        "        self._save(items)\n\n"
+        "    def complete(self, index):\n"
+        "        items = self._load()\n"
+        "        items[index - 1]['done'] = True  # BUG: 越界时抛异常，没有友好提示\n"
+        "        self._save(items)\n\n"
+        "    def _load(self):\n"
+        "        try:\n            return json.load(open(self.path))\n"
+        "        except FileNotFoundError:\n            return []\n\n"
+        "    def _save(self, items):\n        json.dump(items, open(self.path, 'w'))\n"
+    ),
+}
+
+
+def build_project():
+    """首次运行时把 DEMO_FILES 写到磁盘，搭出被分析的目标项目。"""
+    # 已存在就跳过：重复运行不会覆盖，保证演示可重入
+    if not os.path.isdir(PROJECT_DIR):
+        os.makedirs(PROJECT_DIR)
+        for name, content in DEMO_FILES.items():
+            with open(os.path.join(PROJECT_DIR, name), "w", encoding="utf-8") as f:
+                f.write(content)
+    print(f"[setup] 演示项目就绪：{PROJECT_DIR}/（{len(DEMO_FILES)} 个文件）")
+
+
+# ========================= 5. 边界内工具 =========================
+# 工具清单（JSON Schema 格式）交给模型看：它据此知道有哪些工具、参数怎么填。
+# 只开放 list_files / read_file / finish 三个工具——"边界内"意味着
+# Agent 无论怎么犯错，也只能在这个沙盒目录里打转，做不出危险的事。
+TOOL_SCHEMAS = [
+    {"name": "list_files",
+     "description": "列出项目目录中的所有文件",
+     "parameters": {"type": "object", "properties": {}, "required": []}},
+    {"name": "read_file",
+     "description": "读取项目中的一个文件内容",
+     "parameters": {"type": "object",
+                    "properties": {"name": {"type": "string"}},
+                    "required": ["name"]}},
+    {"name": "finish",
+     "description": "探索完成，提交结构化理解报告（JSON 字符串）",
+     "parameters": {
+         "type": "object",
+         "properties": {"report": {"type": "string",
+                                   "description": ("JSON 对象，字段：purpose(项目用途), "
+                                                   "entry_points(入口文件数组), "
+                                                   "structure(结构描述), "
+                                                   "risks(风险点数组，每条注明来源文件)"),
+                                     }},
+         "required": ["report"]}},
+]
+
+
+def execute_tool(name, arguments, budget, state):
+    """真正执行模型要求的工具，返回结果字符串（会作为 tool 消息喂回模型）。
+    这是"模型提议、程序执行"模式的执行端——模型只能提议，动手的是这里。"""
+    # 工具 1：列出项目目录里的所有文件，结果转成 JSON 字符串
+    if name == "list_files":
+        return json.dumps(os.listdir(PROJECT_DIR), ensure_ascii=False)
+    # 工具 2：读取指定文件；路径拼接限制在 PROJECT_DIR 内（防越界访问）
+    if name == "read_file":
+        path = os.path.join(PROJECT_DIR, arguments.get("name", ""))
+        # 文件不存在不抛异常，而是返回错误信息——让模型自己看到错误并调整
+        if not os.path.isfile(path):
+            return f"错误：文件 {arguments.get('name')} 不存在"
+        with open(path, encoding="utf-8") as f:
+            # [:2000] 截断：上下文预算意识（M5）。文件太长会撑爆上下文，
+            # 宁可给模型半份内容并让它知道被截断，也不要塞进全文
+            return f.read()[:2000]   # 截断：上下文预算意识（M5）
+    # 工具 3：finish 是"终止信号"——模型调用它表示探索结束、提交报告。
+    # 报告存进 state，done 置 True，外层循环看到后就会停
+    if name == "finish":
+        state["report"] = arguments.get("report", "")
+        state["done"] = True
+        return "报告已接收"
+    # 兜底：模型要求了清单之外的工具，返回错误而不是崩溃
+    return f"错误：工具 {name} 不存在"
+
+
+# ========================= 6. 控制循环（M3） + 交付（M11） =========================
+def run_capstone():
+    """Agent 工具循环主函数：模型提议工具 -> 执行 -> 结果喂回 -> 再决策。
+    两个停止条件：模型调用 finish，或步数/预算用尽（优雅停止）。"""
+    # 预算护栏与共享状态：state 在主循环和 execute_tool 之间传递结果
+    budget = Budget(BUDGET_TOKENS)
+    state = {"done": False, "report": None}
+    # 初始对话：系统提示告诉模型它有哪些工具、怎么交报告、报告要带证据
+    messages = [
+        {"role": "system", "content":
+            "你是项目分析 Agent。用 list_files 和 read_file 探索项目，"
+            "每个文件都要读，然后调用 finish 提交报告。"
+            "报告中每个结论都要注明来源文件名。"
+            "注意 read_file 内容可能被截断，引用时说明这一情况。"},
+        {"role": "user", "content": f"分析目录 {PROJECT_DIR} 里的项目，"
+                                    f"产出结构化理解报告。"},
+    ]
+    # 控制循环（M3）：最多 8 步。步数上限是第二道护栏，防止模型无限绕圈
+    for step in range(1, 9):
+        # 模型已通过 finish 交了报告，提前结束
+        if state["done"]:
+            break
+        # 调用模型：带上工具清单，模型可能回复文字或 tool_calls
+        message, usage = chat(messages, tools=TOOL_SCHEMAS)
+        # 预算护栏（M10）：先记账再干活；超限立即优雅停止而不是崩溃
+        if not budget.spend(usage.get("total_tokens", 0)):
+            print("[budget] 优雅停止：预算不足以继续探索")
+            break
+        print(f"[step {step}] tokens={usage.get('total_tokens', '?')} "
+              f"(累计 {budget.used}/{budget.limit})")
+        # 分支 1：模型要求调用工具（可能一次要求多个）
+        if message.get("tool_calls"):
+            # 先把模型这条"想用工具"的消息原样记进对话历史——
+            # API 要求 tool 结果必须和对应的 assistant 请求配对出现
+            messages.append({"role": "assistant", "content": message.get("content") or "",
+                             "tool_calls": message["tool_calls"]})
+            for call in message["tool_calls"]:
+                # 从 tool_calls 里取出工具名和 JSON 字符串形式的参数并解析
+                name = call["function"]["name"]
+                args = json.loads(call["function"].get("arguments") or "{}")
+                print(f"  -> {name}({str(args)[:60]}...)")
+                # 执行工具，拿到结果
+                result = execute_tool(name, args, budget, state)
+                # 把结果作为 role=tool 的消息喂回对话，模型下一轮就能看到
+                messages.append({"role": "tool",
+                                 "tool_call_id": call.get("id", f"call_{step}"),
+                                 "content": result})
+        # 分支 2：模型只回文字没调工具（可能是走神或汇报进度）——
+        # 记录它的话，再补一条用户消息把它推回探索轨道
+        else:
+            messages.append({"role": "assistant", "content": message.get("content") or ""})
+            messages.append({"role": "user",
+                             "content": "请继续探索，完成后调用 finish。"})
+
+    # 没收到报告 = 步数或预算用尽仍未完成：明确告知，而不是假装成功
+    if not state["done"]:
+        print("[end] 未收到完整报告（步数或预算用尽）")
+        return None
+    return state["report"]
+
+
+def save_report(report_text):
+    """把报告落盘（M11 交付形态）：报告是本次运行的最终产物，必须存档。
+    即使模型交的不是合法 JSON 也要保存原文，不能让成果凭空丢失。"""
+    # 优先按 JSON 解析，这样报告是结构化数据，程序可直接读取
+    try:
+        report = json.loads(report_text)
+    except json.JSONDecodeError:
+        # 不是合法 JSON：包一层 {"raw": ...} 照样存，并提醒读者
+        print("[warn] 报告不是合法 JSON，按原文保存")
+        report = {"raw": report_text}
+    with open("capstone_report.json", "w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
+    print("[deliver] 报告已写入 capstone_report.json")
+    return report
+
+
+# ========================= 7. 演示主流程 =========================
+def main():
+    print("=" * 60)
+    print("Capstone 案例：项目理解 Agent")
+    print("=" * 60)
+    print(f"模型: {LLM_MODEL_ID} @ {LLM_BASE_URL}\n")
+
+    # 准备被分析的目标项目，然后启动 Agent 工具循环
+    build_project()
+    report_text = run_capstone()
+    if report_text:
+        # 拿到报告后：先打印给用户看，再落盘存档（M11 交付）
+        print("\n=== 项目理解报告 ===")
+        try:
+            # 合法 JSON：格式化打印并保存
+            report = json.loads(report_text)
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            save_report(report_text)
+        except json.JSONDecodeError:
+            # 不是合法 JSON：截取前 800 字符打印，原文另行保存
+            print(report_text[:800])
+            save_report(json.dumps({"raw": report_text}, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    main()

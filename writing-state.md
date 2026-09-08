@@ -78,9 +78,27 @@
 - [ ] 本机没有 quarto CLI，`quarto render` 未验证（结构校验已通过）
 - [ ] M4 的 flaky/失败样本依赖模型行为，换模型后"运行结果节选"可能与新输出不完全一致（属预期，README 已说明）
 - [ ] `agent_course_blueprint/projects/`（旧参考实现）与 `code/` 并存，Capstone 章两者都有引用，后续可统一
-- [ ] `websearch.py` 与 `exa_search_test.py` 内含作者测试用 API key（Exa/Parallel 免费层），若仓库公开需改为 env-only 并清理
 - [ ] M0/M10/capstone_agent.py 有未使用的 `import time`（无害）；因 M 章节嵌入代码是注入快照，改脚本需同步重建案例小节，暂缓
 - [ ] 章节输出节选是某次实跑的快照：P1–P3 每次联网检索结果都不同（URL/字数会变），属预期；README 需保持"输出可能与书中不同"的说明
+
+## 2026-09-08 变更：GitHub 发布与仓库修复
+
+仓库：https://github.com/liamamilin/Agent-Engineering-From-Runtime-to-Production
+
+- **修复 submodule**：code/ 内嵌 .git 导致首次 push 时 20 个案例脚本未入库
+  （GitHub 显示为空 gitlink）；已删除 code/.git，脚本正式入库
+- **API key 脱敏**：websearch.py / exa_search_test.py 移除内置 key，改为
+  自动加载 code/.env（新增迷你 load_dotenv，环境变量优先）；code/.env 含
+  真实 key 且被 .gitignore 忽略；.env.example 提供模板。缺 key 时报错并
+  提示注册地址。文档（index.qmd / code/README.md / P1-P3 章节配置块）同步更新
+- **仓库清理**：.gitignore 新增（__pycache__/.DS_Store/.Rhistory/.Rproj.user/
+  _book/agent.log/sessions/memory/outputs/capstone_demo_project 等）；
+  已从 git 跟踪中移除（git rm --cached）
+- **CI 发布**：新增 .github/workflows/publish.yml（quarto-dev 官方 action，
+  push 到 main 自动 render 并 deploy 到 GitHub Pages）。需在仓库
+  Settings → Pages → Build and deployment → Source 选 "GitHub Actions"
+- 验证：脱敏后 exa/parallel 双 provider 实跑通过，缺 key 报错路径验证；
+  暂存树确认无任何 key 字符串；P 章节重生成后字节级校验通过
 
 ## 2026-09-07 变更：联网搜索封装 websearch.py（实战篇前置工作）
 
@@ -91,17 +109,10 @@
 - Parallel API：`POST https://api.parallel.ai/v1/search`（objective + search_queries + mode），
   `POST /v1/extract`（urls）；认证 header `x-api-key`；extract 不接受 `full_content`/空 `objective` 字段（422）
 - 配置区支持环境变量覆盖：`WEBSEARCH_PROVIDER` / `EXA_API_KEY` / `PARALLEL_API_KEY`
+  （2026-09-08 起改为 .env 机制，见上）
 - 自检：`python websearch.py [--provider exa|parallel] "查询"` 两个 provider 实跑通过
 - 约定变化：实战篇 P1–P3 将 `import websearch`（共享模块），不再是单文件自包含；P4/P5 仍单文件
 - 后续：实战篇 P1 联网 RAG / P2 Deep Research / P3 HITL 调研 将基于本模块构建
-
-## Progress Log
-
-- 2026-09-07: 13 章注入完整案例；新增 code/ 目录并全部实跑验证；index.qmd 与 code/README.md 更新
-- 2026-09-07: 新增实战篇（P1–P5 + Capstone 前）：websearch.py 搜索封装（Exa/Parallel
-  双 provider，实跑验证）；5 个实战脚本全部用 Ollama qwen3.8:27b-mlx + 真实联网实跑通过；
-  5 个完整深度章节由新维护工具 gen_p_chapters.py 生成（代码从脚本注入，保证同步）；
-  更新 _quarto.yml / index.qmd / code/README.md
 
 ## 2026-09-07 变更：实战篇 P1–P5
 
@@ -112,6 +123,10 @@
 - 新脚本：P1_web_rag / P2_deep_research / P3_hitl_research / P4_mcp_minimal / P5_coding_agent
 - 新共享模块：websearch.py（P1–P3 复用；约定变化：实战联网案例不再是单文件自包含）
 - 新维护工具：gen_p_chapters.py（幂等重生成 5 章，嵌入代码直接读 code/P*.py）
+- 实跑验证要点：P1 拒答真实触发；P2 证据库 6 条/15000 字符 + 带引用报告；
+  P3 逐项审批真实跳过步骤 2；P4 agent 完成 握手→发现→调用 全流程且原生 JSON-RPC 可手工调试；
+  P5 真实修复 shop.py 的 final_price bug（红→绿 6 步）
+- Parallel API 适配注意：/v1/extract 不接受 full_content / 空 objective 字段（422）
 
 ### 2026-09-07 变更：全书代码加小白注释
 
@@ -125,11 +140,6 @@
 - 注释约定：解释"做什么/为什么"而非逐字翻译；术语首次出现给白话解释
   （temperature/token/tool_calls/指数退避/2-gram/JSON-RPC/沙箱 realpath 等）；
   不注释显而易见的代码
-- 实跑验证要点：P1 拒答真实触发；P2 证据库 6 条/15000 字符 + 带引用报告；
-  P3 逐项审批真实跳过步骤 2；P4 agent 完成 握手→发现→调用 全流程且原生 JSON-RPC 可手工调试；
-  P5 真实修复 shop.py 的 final_price bug（红→绿 6 步）
-- Parallel API 适配注意：/v1/extract 不接受 full_content / 空 objective 字段（422）
-- 待清理：code/sandbox_p5/ 是 P5 运行产物（内含已修复的 shop.py），交付前删除以重置演示
 
 ### 复查修复（同日）
 
@@ -142,3 +152,12 @@
   脚本与书中代码漂移，暂不动，见 Open Issues）
 - 复查后回归：P4/P5/P3 全部重跑通过；结构校验（围栏/锚点/字节级代码一致/伪影）全绿；
   sandbox_p5/ 已再次清理
+
+## Progress Log
+
+- 2026-09-07: 13 章注入完整案例；新增 code/ 目录并全部实跑验证；index.qmd 与 code/README.md 更新
+- 2026-09-07: 新增实战篇（P1–P5 + Capstone 前）：websearch.py 搜索封装（Exa/Parallel
+  双 provider，实跑验证）；5 个实战脚本全部用 Ollama qwen3.8:27b-mlx + 真实联网实跑通过；
+  5 个完整深度章节由新维护工具 gen_p_chapters.py 生成（代码从脚本注入，保证同步）；
+  更新 _quarto.yml / index.qmd / code/README.md
+- 2026-09-08: 仓库修复（submodule/清理/脱敏 .env 机制）+ CI 发布工作流；见"GitHub 发布与仓库修复"
