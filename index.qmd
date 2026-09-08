@@ -93,9 +93,9 @@ python code/M0_first_agent.py
 **实战篇（P1–P3）需要联网搜索**：P1/P2/P3 通过共享模块 `code/websearch.py` 访问真实网络。搜索 key 属于私密信息，不写在代码里——把 `code/.env.example` 复制为 `code/.env` 并填入 key（`.env` 已被 git 忽略，不会被提交），任选一家免费服务：
 
 | 搜索服务 | 注册地址 | 免费额度 | .env 配置项 |
-|----------|----------|----------|-------------|
+|----|----|----|----|
 | Exa | [dashboard.exa.ai](https://dashboard.exa.ai) | 注册送免费额度 | `EXA_API_KEY` |
-| Parallel | [platform.parallel.ai](https://platform.parallel.ai) | 每月 $5 免费额度 | `PARALLEL_API_KEY` |
+| Parallel | [platform.parallel.ai](https://platform.parallel.ai) | 每月 \$5 免费额度 | `PARALLEL_API_KEY` |
 
 切换默认搜索服务：在 `.env` 中设置 `WEBSEARCH_PROVIDER=exa` 或 `parallel`（也可以用环境变量，优先级高于 `.env`）。P4（MCP）与 P5（Coding Agent）不联网，无需搜索 key。
 
