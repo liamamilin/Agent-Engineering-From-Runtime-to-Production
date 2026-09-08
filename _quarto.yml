@@ -54,9 +54,6 @@ format:
       - brand
     code-copy: true
     code-fold: true
-  pdf:
-    documentclass: scrreprt
-    CJKmainfont: "PingFang SC"
 
 execute:
   freeze: auto

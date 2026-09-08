@@ -99,6 +99,19 @@
   Settings → Pages → Build and deployment → Source 选 "GitHub Actions"
 - 验证：脱敏后 exa/parallel 双 provider 实跑通过，缺 key 报错路径验证；
   暂存树确认无任何 key 字符串；P 章节重生成后字节级校验通过
+- **历史泄露处置**：旧提交 acaaea7 的 .Rproj.user（RStudio 编辑器快照）内含
+  当时未脱敏的 websearch.py/exa_search_test.py；已用 git filter-branch 重写全部
+  历史 + reflog expire + gc，本地所有可达提交零 key 命中；用户已 force-push。
+  **旧 key 已公开暴露，已在 Exa/Parallel 后台轮换，新 key 只存 code/.env**
+- **CI 渲染修复**：GitHub Actions 失败根因 = `quarto render` 不带参数会渲染
+  _quarto.yml 里声明的全部格式，PDF 需要 LaTeX scrreprt + PingFang SC（CI 无）；
+  本地下载 quarto 1.10.18（经 ghproxy 镜像）复现确认 HTML 20/20 全部通过、
+  PDF 挂在 scrreprt.cls not found；workflow 改为 `render with: to: html`；
+  本地 _book 抽查：18 章 HTML、折叠 callout、案例锚点（sec-P4-case 等）均正常。
+  上线地址：https://liamamilin.github.io/Agent-Engineering-From-Runtime-to-Production/
+  （前置条件：仓库 Settings → Pages → Source 选 "GitHub Actions"）
+- **移除 PDF 格式**（用户决定只出 HTML）：_quarto.yml 删除 pdf 声明块，
+  本地 `quarto render`（无参数）验证全绿 18 章；CI workflow 的 `to: html` 作为双保险保留
 
 ## 2026-09-07 变更：联网搜索封装 websearch.py（实战篇前置工作）
 

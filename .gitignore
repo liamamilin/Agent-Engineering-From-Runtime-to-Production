@@ -13,6 +13,9 @@ __pycache__/
 .Rhistory
 .Rproj.user/
 
+# --- 渲染临时日志 ---
+*.log
+
 # --- 脚本运行时生成的产物（删除后重跑即可再生）---
 agent.log
 sessions/
@@ -31,3 +34,6 @@ code/agent.log
 # --- 私密配置（绝不提交）---
 .env
 code/.env
+
+/.quarto/
+**/*.quarto_ipynb

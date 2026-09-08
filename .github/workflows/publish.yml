@@ -20,7 +20,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: quarto-dev/quarto-actions/setup@v2
+      # 只渲染 HTML：_quarto.yml 里声明的 pdf 需要 LaTeX + PingFang SC 字体，
+      # CI 环境两者都没有（本地渲染 PDF 用：quarto render --to pdf）
       - uses: quarto-dev/quarto-actions/render@v2
+        with:
+          to: html
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _book
